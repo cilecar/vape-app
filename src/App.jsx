@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef, createContext, useContext } from "react";
+import { flushSync } from "react-dom";
 import { Preferences } from "@capacitor/preferences";
 import { App as CapApp } from "@capacitor/app";
 import { Capacitor } from "@capacitor/core";
@@ -303,9 +304,9 @@ const TABS = [...Object.keys(TYPES), "tracker"];
 const tabIndex = t => TABS.indexOf(t);
 
 /* ── settings ── */
-const APP_DEFAULT = { currency:"RUB", lang:"ru", theme:"dark", ai:true, geminiKey:"" };
+const APP_DEFAULT = { currency:"USD", lang:"ru", theme:"dark", ai:true, geminiKey:"" };
 // только подпись: уже введённые цены не пересчитываются
-const CURRENCIES = { RUB:{ru:"₽", en:"₽"}, RSD:{ru:"дин", en:"din"} };
+const CURRENCIES = { USD:{ru:"$", en:"$"}, EUR:{ru:"€", en:"€"}, RUB:{ru:"₽", en:"₽"}, RSD:{ru:"дин", en:"din"} };
 const THEMES = ["dark","light"];
 async function loadSettings(trkCfg) {
   try {
@@ -315,7 +316,7 @@ async function loadSettings(trkCfg) {
   } catch { return APP_DEFAULT; }
 }
 const saveSettings = v => Preferences.set({ key: "app_cfg", value: JSON.stringify(v) });
-const Ctx = createContext({ cur:"₽", lang:"ru", t:makeT("ru"), ai:{on:false, key:""} });
+const Ctx = createContext({ cur:"$", lang:"ru", t:makeT("ru"), ai:{on:false, key:""} });
 const useCur = () => useContext(Ctx).cur;
 const useT = () => useContext(Ctx).t;
 const useTypeCfg = type => typeCfg(type, useContext(Ctx).lang);
@@ -535,6 +536,24 @@ function downloadText(text, name) {
   setTimeout(()=>URL.revokeObjectURL(url), 2000);
 }
 
+/* ── переходы ── */
+// View Transitions: браузер снимает старый экран и анимирует его уход вместе с появлением нового.
+// nav — направление (fwd/back/fade/tab-r/tab-l/sheet), по нему css выбирает анимацию
+const VT = typeof document!=="undefined" && !!document.startViewTransition;
+let vtQueue = null;
+function animate(nav, fn) {
+  if (!VT || matchMedia("(prefers-reduced-motion: reduce)").matches) return fn();
+  document.documentElement.dataset.nav = nav;
+  // несколько переходов из одного обработчика — одной анимацией, направление у последнего
+  if (vtQueue) { vtQueue.push(fn); return; }
+  vtQueue = [fn];
+  const vt = document.startViewTransition(()=>{ const fns = vtQueue; vtQueue = null; flushSync(()=>fns.forEach(f=>f())); });
+  vt.finished.finally(()=>{ if (!vtQueue) delete document.documentElement.dataset.nav; });
+}
+const DEPTH = { list:0, settings:1, compare:1, detail:1 };
+const depth = v => v.page==="form" ? (v.id?2:1) : DEPTH[v.page];
+const navDir = (from, to) => { const d = depth(to)-depth(from); return d>0?"fwd":d<0?"back":"fade"; };
+
 /* ── css ── */
 const css = `
 @import url('https://fonts.googleapis.com/css2?family=Unbounded:wght@500;700&family=Inter:wght@400;500;600&display=swap');
@@ -550,7 +569,7 @@ const css = `
 .hdr-right{display:flex;gap:8px}
 .icon-btn{background:none;border:1px solid var(--line);border-radius:10px;color:var(--fg);padding:7px 11px;font-size:15px;cursor:pointer;line-height:1;font-family:Inter,sans-serif;font-weight:500}
 .tabs{display:flex;border-bottom:1px solid var(--line);margin-bottom:10px}
-.tab{flex:1;text-align:center;padding:10px 0 12px;font:600 13px Inter;cursor:pointer;border:none;background:transparent;color:var(--mute);border-bottom:2px solid transparent;margin-bottom:-1px}
+.tab{flex:1;text-align:center;padding:10px 0 12px;font:600 13px Inter;cursor:pointer;border:none;background:transparent;color:var(--mute);border-bottom:2px solid transparent;margin-bottom:-1px;transition:color .25s,border-color .25s}
 .tab.on{color:var(--fg);border-bottom-color:var(--fg)}
 .srow{display:flex;gap:8px;margin-bottom:8px}
 .srow input{flex:1;padding:9px 12px;font-size:14px}
@@ -624,7 +643,32 @@ td{padding:8px 0;border-bottom:1px solid var(--s2)}td:last-child,th:last-child{t
 .logrow{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--s2);font-size:13.5px}
 @keyframes inR{from{opacity:0;transform:translateX(32px)}to{opacity:1;transform:none}}
 @keyframes inL{from{opacity:0;transform:translateX(-32px)}to{opacity:1;transform:none}}
-.in-r{animation:inR .2s ease-out}.in-l{animation:inL .2s ease-out}
+.in-r{animation:inR .28s cubic-bezier(.2,.8,.2,1)}.in-l{animation:inL .28s cubic-bezier(.2,.8,.2,1)}
+@keyframes vtOutL{to{opacity:0;transform:translateX(-40px)}}
+@keyframes vtOutR{to{opacity:0;transform:translateX(40px)}}
+@keyframes vtInR{from{opacity:0;transform:translateX(40px)}}
+@keyframes vtInL{from{opacity:0;transform:translateX(-40px)}}
+@keyframes vtFadeOut{to{opacity:0}}
+@keyframes vtFadeIn{from{opacity:0}}
+@keyframes vtSheetIn{from{transform:translateY(100%)}}
+@keyframes vtSheetOut{to{transform:translateY(100%)}}
+::view-transition-old(*),::view-transition-new(*){mix-blend-mode:normal}
+::view-transition-old(root),::view-transition-old(tabpane){animation:vtFadeOut .16s cubic-bezier(.4,0,1,1) both}
+::view-transition-new(root),::view-transition-new(tabpane){animation:vtFadeIn .3s cubic-bezier(0,0,.2,1) .06s both}
+:root[data-nav=fwd]::view-transition-old(root),:root[data-nav=tab-r]::view-transition-old(tabpane){animation-name:vtOutL}
+:root[data-nav=fwd]::view-transition-new(root),:root[data-nav=tab-r]::view-transition-new(tabpane){animation-name:vtInR}
+:root[data-nav=back]::view-transition-old(root),:root[data-nav=tab-l]::view-transition-old(tabpane){animation-name:vtOutR}
+:root[data-nav=back]::view-transition-new(root),:root[data-nav=tab-l]::view-transition-new(tabpane){animation-name:vtInL}
+:root[data-nav=sheet]::view-transition-old(root){animation:vtFadeOut .24s ease both}
+:root[data-nav=sheet]::view-transition-new(root){animation:vtFadeIn .24s ease both}
+/* при смене вкладки едет только содержимое, шапка и вкладки стоят */
+:root[data-nav^=tab] .swipe{view-transition-name:tabpane}
+:root[data-nav^=tab] .fab{view-transition-name:fab}
+:root[data-nav^=tab]::view-transition-old(root),:root[data-nav^=tab]::view-transition-new(root),::view-transition-group(tabpane){animation:none}
+.sheet{view-transition-name:sheet}
+::view-transition-group(sheet){animation:none}
+::view-transition-new(sheet){animation:vtSheetIn .34s cubic-bezier(.2,.8,.2,1) both}
+::view-transition-old(sheet){animation:vtSheetOut .22s cubic-bezier(.4,0,1,1) both}
 `;
 
 /* ── atoms ── */
@@ -1238,7 +1282,7 @@ function Detail({l, type, smoked, onUpdate, onEdit, onDelete, onBack, onStartCom
 export default function App() {
   const [tab, setTab] = useState("vape");
   const [allItems, setAllItems] = useState(()=>Object.fromEntries(Object.keys(TYPES).map(t=>[t,[]])));
-  const [view, setView] = useState({page:"list"});
+  const [view, setViewNow] = useState({page:"list"});
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [filterFav, setFilterFav] = useState(false);
@@ -1246,11 +1290,13 @@ export default function App() {
   const [cmpMode, setCmpMode] = useState(false);
   const [cmpIds, setCmpIds] = useState([]);
   const [trk, setTrk] = useState(TRK_DEFAULT);
-  const [sheet, setSheet] = useState(null);
+  const [sheet, setSheetNow] = useState(null);
   const [flash, setFlash] = useState(null);
   const [pendingAct, setPendingAct] = useState(null);
   const [slide, setSlide] = useState("");
   const [app, setApp] = useState(APP_DEFAULT);
+  const setView = v => animate(navDir(view, v), ()=>setViewNow(v));
+  const setSheet = s => animate("sheet", ()=>setSheetNow(s));
 
   useEffect(()=>{
     const types = Object.keys(TYPES);
@@ -1268,7 +1314,7 @@ export default function App() {
 
   const {lang, theme} = app;
   const t = useMemo(()=>makeT(lang),[lang]);
-  const cur = (CURRENCIES[app.currency] || CURRENCIES.RUB)[lang];
+  const cur = (CURRENCIES[app.currency] || CURRENCIES[APP_DEFAULT.currency])[lang];
   const ai = useMemo(()=>({on:app.ai, key:app.geminiKey}),[app.ai,app.geminiKey]);
   const ctx = useMemo(()=>({cur, lang, t, ai}),[cur,lang,t,ai]);
   useEffect(()=>{
@@ -1318,9 +1364,13 @@ export default function App() {
     remove(id,tab); setItems(p=>p.filter(x=>x.id!==id)); setView({page:"list"});
   };
   const switchTab = t => {
-    setSlide(tabIndex(t)>tabIndex(tab)?"in-r":tabIndex(t)<tabIndex(tab)?"in-l":"");
-    setTab(t); setView({page:"list"}); setSearch(""); setFilterFav(false);
-    setFilterStatus(""); setCmpMode(false); setCmpIds([]);
+    const dir = tabIndex(t)>tabIndex(tab)?"r":tabIndex(t)<tabIndex(tab)?"l":"";
+    animate(view.page!=="list"?"back":dir?"tab-"+dir:"fade", ()=>{
+      // без View Transitions — старая анимация въезда вкладки
+      setSlide(!VT&&dir?"in-"+dir:"");
+      setTab(t); setViewNow({page:"list"}); setSearch(""); setFilterFav(false);
+      setFilterStatus(""); setCmpMode(false); setCmpIds([]);
+    });
   };
 
   backRef.current = () => {
@@ -1522,7 +1572,7 @@ export default function App() {
           </div>
           {cfg&&(cmpMode
             ?<button className="fab" disabled={cmpIds.length<2}
-                onClick={()=>{if(cmpIds.length===2){setCmpMode(false);setCmpIds([]);setView({page:"compare",compareIds:cmpIds})}}}>
+                onClick={()=>{if(cmpIds.length===2)animate("fwd",()=>{setCmpMode(false);setCmpIds([]);setViewNow({page:"compare",compareIds:cmpIds})})}}>
                 {cmpIds.length===2?t("cmpGo"):t("cmpSel", cmpIds.length)}
               </button>
             :<button className="fab" onClick={()=>setView({page:"form"})}>{cfg.addBtn}</button>
@@ -1542,7 +1592,7 @@ export default function App() {
         <SettingsPage app={app} onApp={patch=>setApp(p=>({...p, ...patch}))} trkCfg={trk.cfg} onTrkCfg={setTrkCfg}
           onTest={testNotif} flash={flash} onFlash={setFlash} onBack={()=>setView({page:"list"})}/>
       )}
-      {view.page==="compare"&&<ComparePage ids={view.compareIds}type={tab} items={items} onBack={()=>setView({page:"list"})}/>}
+      {view.page==="compare"&&<ComparePage ids={view.compareIds} type={tab} items={items} onBack={()=>setView({page:"list"})}/>}
       {view.page==="form"&&(
         <Form initial={view.id?current:null} type={tab}
           onSave={l=>{upsert(l);setView({page:"detail",id:l.id})}}

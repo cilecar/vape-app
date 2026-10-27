@@ -48,27 +48,69 @@ const updateIds = (idsKey, fn) => {
   idsQueue = job.catch(()=>{});
   return job;
 };
+// возвращает то, что записано: новое фото в нём уже путём к файлу, а не data:-url
 const save = async (l, type) => {
   const { key, idsKey } = TYPES[type];
-  await Preferences.set({ key: key + l.id, value: JSON.stringify(l) });
+  const s = await storePhoto(l);
+  const old = await readJSON(key + l.id, null);
+  await Preferences.set({ key: key + l.id, value: JSON.stringify(s) });
+  // фото заменили или убрали — старый файл больше не нужен
+  if (old?.photo!==s.photo) dropPhoto(old?.photo);
   await updateIds(idsKey, ids => ids.includes(l.id) ? ids : [...ids, l.id]);
+  return s;
 };
 const remove = async (id, type) => {
   const { key, idsKey } = TYPES[type];
+  const old = await readJSON(key + id, null);
   await Preferences.remove({ key: key + id });
+  dropPhoto(old?.photo);
   await updateIds(idsKey, ids => ids.filter(x => x !== id));
 };
 async function loadAll(type) {
   const { key, idsKey } = TYPES[type];
   try {
     const ids = await getIds(idsKey);
-    const items = await Promise.all(ids.map(async id => {
+    const items = (await Promise.all(ids.map(async id => {
       try { const { value } = await Preferences.get({ key: key + id }); return value ? JSON.parse(value) : null; }
       catch { return null; }
-    }));
-    return items.filter(Boolean);
+    }))).filter(Boolean);
+    // старые карточки: фото из data:-url — в файл; один раз и по одной, чтобы не держать все в памяти
+    if (NATIVE) for (const [i, l] of items.entries()) if (l.photo?.startsWith("data:")) {
+      try {
+        const s = await storePhoto(l);
+        await Preferences.set({ key: key + l.id, value: JSON.stringify(s) });
+        items[i] = s;
+      } catch {}
+    }
+    return items;
   } catch { return []; }
 }
+
+/* ── photos ── */
+// На телефоне фото — отдельные файлы в Data/photos, в карточке только путь «photos/….jpg»:
+// base64 в Preferences раздувал файл настроек, который Android читает в память целиком.
+// В вебе (разработка) и в данных до переноса — data:-url прямо в карточке
+const PHOTO_DIR = "photos";
+const isPhotoFile = p => typeof p==="string" && /^photos\/[\w-]+\.(jpg|png|webp|gif)$/.test(p);
+let photoBase = ""; // file:///…/files, известен после initPhotos
+const photoSrc = p => isPhotoFile(p) ? Capacitor.convertFileSrc(`${photoBase}/${p}`) : p;
+async function initPhotos() {
+  if (NATIVE) photoBase = (await Filesystem.getUri({ path: "", directory: Directory.Data })).uri.replace(/\/$/, "");
+}
+// карточку с тем же новым фото могут сохранить ещё раз до того, как в состоянии появился путь
+// (например, звёздочка сразу после сохранения), — тогда не плодим второй файл
+const lastWritten = new Map(); // id карточки → {data, path}
+async function storePhoto(l) {
+  if (!NATIVE || !l.photo?.startsWith("data:")) return l;
+  const w = lastWritten.get(l.id);
+  if (w?.data===l.photo) return { ...l, photo: w.path };
+  const ext = { "image/png":"png", "image/webp":"webp", "image/gif":"gif" }[l.photo.slice(5, l.photo.indexOf(";"))] || "jpg";
+  const path = `${PHOTO_DIR}/${l.id}-${uid()}.${ext}`;
+  await Filesystem.writeFile({ path, data: l.photo.slice(l.photo.indexOf(",")+1), directory: Directory.Data, recursive: true });
+  lastWritten.set(l.id, { data: l.photo, path });
+  return { ...l, photo: path };
+}
+const dropPhoto = p => { if (isPhotoFile(p)) Filesystem.deleteFile({ path: p, directory: Directory.Data }).catch(()=>{}); };
 
 /* ── config ── */
 // тексты — в словаре L ниже; здесь только то, что не зависит от языка
@@ -137,7 +179,7 @@ const L = {
     // сравнение
     need2: "Нужно 2 позиции", compare: "Сравнение", byCrit: "По критериям", price: "Цена",
     // форма / карточка
-    webSearch: "Поиск в интернете", find: "Найти", errPrefix: "Ошибка: ", aiTimeout: "Gemini не ответил за 30 секунд", aiEmpty: "Gemini ничего не нашёл — попробуй уточнить запрос", aiBadReply: "Не удалось разобрать ответ Gemini", storeFail: "Не сохранилось в памяти телефона: ", photoErr: "Не удалось обработать фото.",
+    webSearch: "Поиск в интернете", find: "Найти", errPrefix: "Ошибка: ", aiTimeout: "Gemini не ответил за 30 секунд — похоже, сервис перегружен. Попробуй позже", aiBusy: "Сервис Gemini сейчас перегружен. Попробуй позже", aiQuota: "Лимит запросов к Gemini исчерпан. Попробуй позже", aiEmpty: "Gemini ничего не нашёл — попробуй уточнить запрос", aiBadReply: "Не удалось разобрать ответ Gemini", storeFail: "Не сохранилось в памяти телефона: ", photoErr: "Не удалось обработать фото.",
     manufacturer: "Производитель", name: "Название", flavorDesc: "Описание вкуса", strength: "Крепость",
     status: "Статус", notes: "Заметки", ownPhoto: "Своё фото", camera: "📷 Камера", gallery: "🖼 Галерея",
     favOn: "★ Избранное", favOff: "☆ В избранное", avgShort: "ср. оценка", avgLong: "средняя оценка", taste: "Вкус",
@@ -224,7 +266,7 @@ const L = {
     aiKeyChecking: "Checking the key…", aiKeyOk: "✓ The key works", aiKeyBad: "The key doesn't work: ", aiKeyNet: "Couldn't check — no connection to Google",
     aiOff: "AI search is turned off in settings", aiNoKey: "No Gemini key — add one in settings",
     need2: "Need 2 items", compare: "Compare", byCrit: "By criteria", price: "Price",
-    webSearch: "Search the web", find: "Find", errPrefix: "Error: ", aiTimeout: "Gemini didn't answer in 30 seconds", aiEmpty: "Gemini found nothing — try a more specific query", aiBadReply: "Couldn't read Gemini's reply", storeFail: "Couldn't save to the phone: ", photoErr: "Couldn't process the photo.",
+    webSearch: "Search the web", find: "Find", errPrefix: "Error: ", aiTimeout: "Gemini didn't answer in 30 seconds — the service seems overloaded. Try again later", aiBusy: "Gemini is overloaded right now. Try again later", aiQuota: "Gemini request limit reached. Try again later", aiEmpty: "Gemini found nothing — try a more specific query", aiBadReply: "Couldn't read Gemini's reply", storeFail: "Couldn't save to the phone: ", photoErr: "Couldn't process the photo.",
     manufacturer: "Manufacturer", name: "Name", flavorDesc: "Flavor", strength: "Strength",
     status: "Status", notes: "Notes", ownPhoto: "Photo", camera: "📷 Camera", gallery: "🖼 Gallery",
     favOn: "★ Favorite", favOff: "☆ Add to favorites", avgShort: "avg rating", avgLong: "average rating", taste: "Flavor",
@@ -304,10 +346,11 @@ const compressImg = file => new Promise((res, rej) => {
 /* ── ai ── */
 // ключ вписывается в настройках и хранится на телефоне
 const GEMINI_MODEL = "gemini-3.1-flash-lite-preview";
-// список моделей — бесплатный запрос, по нему видно, рабочий ли ключ
+// описание модели — бесплатный запрос: видно и рабочий ли ключ, и доступна ли ему эта модель
+const keyChecks = new Map();
 async function checkGeminiKey(key, signal) {
   let resp;
-  try { resp = await fetch("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1", { signal, headers:{"x-goog-api-key":key} }); }
+  try { resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}`, { signal, headers:{"x-goog-api-key":key} }); }
   catch (e) { if (e?.name==="AbortError") throw e; return { state:"net" }; }
   if (resp.ok) return { state:"ok" };
   const d = await resp.json().catch(()=>null);
@@ -318,13 +361,16 @@ async function aiSearch(query, type, lang, key) {
   const resp = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
     { method:"POST", headers:{"Content-Type":"application/json", "x-goog-api-key":key},
-      body: JSON.stringify({ contents:[{role:"user",parts:[{text:typeCfg(type, lang).ai(query)}]}], generationConfig:{temperature:0.1} }),
+      body: JSON.stringify({ contents:[{role:"user",parts:[{text:typeCfg(type, lang).ai(query)}]}], generationConfig:{temperature:0.1, responseMimeType:"application/json"} }),
       signal: AbortSignal.timeout(AI_TIMEOUT) }
   );
   // при сбое сервера (или прокси, портале wi-fi) в ответе бывает html, а не json;
   // таймаут во время чтения тела — пробрасываем как есть
   let d = null;
   try { d = await resp.json(); } catch (e) { if (e?.name==="TimeoutError") throw e; }
+  // перегрузка и лимиты — своими словами: английский текст Google пользователю ничего не скажет
+  if (resp.status===429) throw aiErr("aiQuota");
+  if (resp.status>=500) throw aiErr("aiBusy");
   if (!resp.ok || d?.error) throw new Error(d?.error?.message || `HTTP ${resp.status}`);
   if (!d) throw aiErr("aiBadReply");
   // пусто — например, запрос отсёк фильтр безопасности
@@ -516,7 +562,7 @@ async function shareCard(l, cfg, cur, t) {
         ctx.drawImage(img,(img.width-IS/sc)/2,(img.height-IS/sc)/2,IS/sc,IS/sc,ix,iy,IS,IS);
         ctx.restore(); res();
       };
-      img.onerror = res; img.src = l.photo;
+      img.onerror = res; img.src = photoSrc(l.photo);
     });
   } else {
     ctx.fillStyle = "#f2f2f2"; rrect(ctx,ix,iy,IS,IS,20); ctx.fill();
@@ -598,7 +644,15 @@ async function makeBackup(withKey = true) {
     // испорченный app_cfg не разобрать — не отдаём его вовсе, ключ мог остаться внутри
     if (data.app_cfg) try { const c = JSON.parse(data.app_cfg); delete c.geminiKey; data.app_cfg = JSON.stringify(c); } catch { delete data.app_cfg; }
   }
-  return JSON.stringify({ app: BACKUP_APP, v: 1, created: new Date().toISOString(), data });
+  // фото карточек лежат файлами — кладём их в бэкап рядом с данными
+  const photos = Object.entries(data)
+    .filter(([k]) => Object.values(TYPES).some(t => k.startsWith(t.key)))
+    .map(([, v]) => { try { return JSON.parse(v).photo; } catch { return null; } })
+    .filter(isPhotoFile);
+  const files = Object.fromEntries((await Promise.all(photos.map(path =>
+    Filesystem.readFile({ path, directory: Directory.Data }).then(r => [path, r.data], () => null) // файла нет — без него
+  ))).filter(Boolean));
+  return JSON.stringify({ app: BACKUP_APP, v: 2, created: new Date().toISOString(), data, files });
 }
 const parseBackup = text => {
   let b; try { b = JSON.parse(text); } catch { return null; }
@@ -616,10 +670,20 @@ async function restoreBackup(b) {
     if (!isObj(c)) c = {};
     if (!c.geminiKey) data.app_cfg = JSON.stringify({...c, geminiKey:key});
   }
+  // фото — раньше карточек, чтобы карточка не ссылалась на ещё не записанный файл.
+  // В бэкапах v1 файлов нет: фото там data:-url в карточках, при запуске они переедут в файлы
+  const files = NATIVE && isObj(b.files) ? Object.entries(b.files).filter(([p, v]) => isPhotoFile(p) && typeof v==="string") : [];
+  await Promise.all(files.map(([path, data]) => Filesystem.writeFile({ path, data, directory: Directory.Data, recursive: true })));
   // список ключей — после чтения выше: оно могло завести app_cfg_broken, его тоже убрать
   const { keys } = await Preferences.keys();
   await Promise.all(Object.entries(data).filter(([, v]) => typeof v==="string").map(([key, value]) => Preferences.set({ key, value })));
   await Promise.all(keys.filter(k => typeof data[k]!=="string").map(key => Preferences.remove({ key })));
+  // фото карточек, которых в бэкапе нет, — убрать
+  if (NATIVE) try {
+    const keep = new Set(files.map(([p]) => p));
+    const { files: have } = await Filesystem.readdir({ path: PHOTO_DIR, directory: Directory.Data });
+    await Promise.all(have.filter(f => !keep.has(`${PHOTO_DIR}/${f.name}`)).map(f => Filesystem.deleteFile({ path: `${PHOTO_DIR}/${f.name}`, directory: Directory.Data })));
+  } catch {}
 }
 const backupName = () => `vape-backup-${today()}-${new Date().toTimeString().slice(0,5).replace(":","")}.json`;
 // в «Документы»; имя с временем — файл от прошлой установки приложения перезаписать нельзя
@@ -917,7 +981,7 @@ function PackSheet({sticks, cur, curLeft, onOpen, onClose, onAddSticks}) {
       <div className="hint" style={{marginBottom:12}}>{t("whichSticks")}</div>
       {ordered.map(s=>(
         <div key={s.id} className={"pick"+(sel===s.id?" on":"")} onClick={()=>choose(s)}>
-          {s.photo?<img src={s.photo} style={{width:40,height:40,borderRadius:8,objectFit:"cover",flex:"none"}} alt=""/>
+          {s.photo?<img src={photoSrc(s.photo)} style={{width:40,height:40,borderRadius:8,objectFit:"cover",flex:"none"}} alt=""/>
             :<div className="disp" style={{width:40,height:40,borderRadius:8,background:"var(--fg)",color:"var(--bg)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:17,flex:"none"}}>{(s.name||"?")[0].toUpperCase()}</div>}
           <div style={{flex:1,minWidth:0}}>
             <div style={{fontWeight:600,fontSize:14}}>{s.name}</div>
@@ -955,7 +1019,7 @@ function TrackerPage({trk, sticks, flash, onAdd, onDelEntry, onCancelPack, onShe
   const packById = useMemo(()=>Object.fromEntries(packs.map(p=>[p.id,p])),[packs]);
   const tk = dayKey(Date.now());
   const todayN = totals[tk]||0, yestN = totals[shiftDay(tk,-1)]||0;
-  const firstDay = log.length ? dayKey(Math.min(...log.map(e=>e.t))) : tk;
+  const firstDay = log.length ? dayKey(log.reduce((m,e)=>Math.min(m,e.t), Infinity)) : tk;
   const avgOver = n => {
     let s=0, c=0;
     for (let i=1; i<=n; i++) { const k=shiftDay(tk,-i); if (k<firstDay) break; s+=totals[k]||0; c++; }
@@ -997,7 +1061,7 @@ function TrackerPage({trk, sticks, flash, onAdd, onDelEntry, onCancelPack, onShe
         {cur ? (
           <>
             <div style={{display:"flex",gap:12,alignItems:"center"}}>
-              {stick?.photo?<img src={stick.photo} className="thumb" alt=""/>:<Tile l={stick||{name:"?"}}/>}
+              {stick?.photo?<img src={photoSrc(stick.photo)} className="thumb" alt=""/>:<Tile l={stick||{name:"?"}}/>}
               <div style={{flex:1,minWidth:0}}>
                 <div style={{fontWeight:600,fontSize:15}}>{stick?.name||t("deletedSticks")}</div>
                 <div className="hint">{t("openedAt", fmtDate(localDate(new Date(cur.opened))))}{forecast&&` · ${forecast}`}</div>
@@ -1080,10 +1144,16 @@ function SettingsPage({app, onApp, trkCfg, onTrkCfg, onTest, flash, onFlash, onB
   const [keyCheck, setKeyCheck] = useState({state:""});
   useEffect(()=>{
     if (!app.ai || !app.geminiKey) { setKeyCheck({state:""}); return; }
+    // этот ключ уже проверяли — не ходим в сеть при каждом заходе в настройки
+    const known = keyChecks.get(app.geminiKey);
+    if (known) { setKeyCheck(known); return; }
     setKeyCheck({state:"checking"});
     const ac = new AbortController();
     // ждём, пока допечатают / вставят ключ целиком
-    const tm = setTimeout(()=>checkGeminiKey(app.geminiKey, ac.signal).then(setKeyCheck, ()=>{}), 600);
+    const tm = setTimeout(()=>checkGeminiKey(app.geminiKey, ac.signal).then(r=>{
+      if (r.state!=="net") keyChecks.set(app.geminiKey, r); // сбой сети — проверим в следующий раз
+      setKeyCheck(r);
+    }, ()=>{}), 600);
     return ()=>{ clearTimeout(tm); ac.abort(); };
   },[app.ai, app.geminiKey]);
   const chips = (opts, val, onPick) => (
@@ -1204,7 +1274,7 @@ function ComparePage({ids, type, items, onBack}) {
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:18}}>
         {[a,b].map(l=>(
           <div key={l.id} style={{background:"var(--s1)",border:"1px solid var(--line)",borderRadius:12,padding:12,textAlign:"center"}}>
-            {l.photo?<img src={l.photo} style={{width:64,height:64,borderRadius:12,objectFit:"cover",marginBottom:8}} alt=""/>
+            {l.photo?<img src={photoSrc(l.photo)} style={{width:64,height:64,borderRadius:12,objectFit:"cover",marginBottom:8}} alt=""/>
               :<div style={{width:64,height:64,borderRadius:12,background:"var(--fg)",color:"var(--bg)",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:700,fontSize:24,margin:"0 auto 8px"}}>{(l.name||"?")[0]}</div>}
             <div style={{fontSize:13,fontWeight:600,lineHeight:1.3,marginBottom:4}}>{l.name}</div>
             <div style={{fontSize:18,fontWeight:700}}>{avgRating(l,cfg.criteria)>0?avgRating(l,cfg.criteria).toFixed(1):"—"}</div>
@@ -1327,7 +1397,7 @@ function Form({initial, type, onSave, onCancel}) {
         </label>
         {f.photo&&<button className="btn ghost" style={{flex:"none"}} onClick={()=>set("photo","")}>✕</button>}
       </div>
-      {f.photo&&<img src={f.photo} className="hero" alt="" onClick={()=>setLb(f.photo)} style={{cursor:"zoom-in"}}/>}
+      {f.photo&&<img src={photoSrc(f.photo)} className="hero" alt="" onClick={()=>setLb(photoSrc(f.photo))} style={{cursor:"zoom-in"}}/>}
       <Lightbox src={lb} onClose={()=>setLb("")}/>
       <div className="row" style={{marginTop:22}}>
         <button className="btn" disabled={!f.name.trim()} onClick={()=>onSave(f)}>{t("save")}</button>
@@ -1365,7 +1435,7 @@ function Detail({l, type, smoked, onUpdate, onEdit, onDelete, onBack, onStartCom
           {l.favorite?t("favOn"):t("favOff")}
         </button>
       </div>
-      {l.photo?<img src={l.photo} className="hero" alt="" onClick={()=>setLb(l.photo)} style={{cursor:"zoom-in"}} onError={e=>e.target.style.display="none"}/>:<Tile l={l} big/>}
+      {l.photo?<img src={photoSrc(l.photo)} className="hero" alt="" onClick={()=>setLb(photoSrc(l.photo))} style={{cursor:"zoom-in"}} onError={e=>e.target.style.display="none"}/>:<Tile l={l} big/>}
       <Lightbox src={lb} onClose={()=>setLb("")}/>
       <h1 className="disp" style={{fontSize:21,margin:"16px 0 2px"}}>{l.name}</h1>
       <div style={{color:"var(--mute)",fontSize:13,display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
@@ -1445,11 +1515,17 @@ export default function App() {
   const setView = (v, also) => animate(navDir(view, v), ()=>{ try { also?.(); } finally { setViewNow(v); } });
   const setSheet = (s, also) => animate("sheet", ()=>{ try { also?.(); } finally { setSheetNow(s); } });
 
+  // только что прочитанное: эффекты записи пропускают его, а не пишут обратно при каждом запуске
+  const loaded = useRef(null);
   useEffect(()=>{
     const types = Object.keys(TYPES);
-    const trkAndApp = loadTracker().then(async tr=>[tr, await loadSettings(tr.cfg)]);
-    Promise.all([...types.map(loadAll), trkAndApp]).then(res=>{
+    // без базы фото карточки с файлами не покажутся — но и без неё работаем дальше
+    initPhotos().catch(()=>{}).then(()=>Promise.all([
+      ...types.map(loadAll),
+      loadTracker().then(async tr=>[tr, await loadSettings(tr.cfg)]),
+    ])).then(res=>{
       const [tr, ap] = res.at(-1);
+      loaded.current = {trk:tr, app:ap};
       setAllItems(Object.fromEntries(types.map((t,i)=>[t,res[i]]))); setTrk(tr); setApp(ap); setLoading(false);
       // напоминание включено, а разрешения нет — например, бэкап восстановили на другом телефоне.
       // Только проверяем: запрос при холодном старте Android может отклонить, не показав диалог,
@@ -1466,9 +1542,9 @@ export default function App() {
   const langRef = useRef(app.lang);
   langRef.current = app.lang;
   const storeFail = e => reportStoreFail(langRef.current, e);
-  useEffect(()=>{ if (!loading) saveTracker("data",{packs:trk.packs, log:trk.log}).catch(e=>reportStoreFail(langRef.current, e, true)); },[loading,trk.packs,trk.log]);
-  useEffect(()=>{ if (!loading) saveTracker("cfg",trk.cfg).catch(e=>reportStoreFail(langRef.current, e, true)); },[loading,trk.cfg]);
-  useEffect(()=>{ if (!loading) saveSettings(app).catch(e=>reportStoreFail(langRef.current, e, true)); },[loading,app]);
+  useEffect(()=>{ if (!loading && (trk.packs!==loaded.current.trk.packs || trk.log!==loaded.current.trk.log)) saveTracker("data",{packs:trk.packs, log:trk.log}).catch(e=>reportStoreFail(langRef.current, e, true)); },[loading,trk.packs,trk.log]);
+  useEffect(()=>{ if (!loading && trk.cfg!==loaded.current.trk.cfg) saveTracker("cfg",trk.cfg).catch(e=>reportStoreFail(langRef.current, e, true)); },[loading,trk.cfg]);
+  useEffect(()=>{ if (!loading && app!==loaded.current.app) saveSettings(app).catch(e=>reportStoreFail(langRef.current, e, true)); },[loading,app]);
 
   const {lang, theme} = app;
   const t = useMemo(()=>makeT(lang),[lang]);
@@ -1486,7 +1562,12 @@ export default function App() {
   const curPack = trk.packs.at(-1);
   const curLeft = packLeft(curPack, trk.log);
   const curName = curPack ? (sticks.find(s=>s.id===curPack.stickId)?.name||t("sticksDefault")) : "";
-  useEffect(()=>{ if (!loading) syncReminder(trk.cfg, curPack, curLeft, curName, t); },[loading,trk.cfg,curPack,curLeft,curName,t]);
+  // серия +1 — одно обновление напоминаний, а не по одному на каждое нажатие
+  useEffect(()=>{
+    if (loading) return;
+    const tm = setTimeout(()=>syncReminder(trk.cfg, curPack, curLeft, curName, t), 500);
+    return ()=>clearTimeout(tm);
+  },[loading,trk.cfg,curPack,curLeft,curName,t]);
 
   useEffect(()=>{
     if (!NATIVE) return;
@@ -1515,7 +1596,8 @@ export default function App() {
   const cfg = TYPES[tab] && typeCfg(tab, lang);
 
   const upsert = l => {
-    save(l,tab).catch(storeFail);
+    // новое фото записано файлом — в состоянии заменяем data:-url путём, если карточку не успели поменять
+    save(l,tab).then(s=>{ if (s.photo!==l.photo) setItems(p=>p.map(x=>x.id===s.id&&x.photo===l.photo?{...x, photo:s.photo}:x)); }).catch(storeFail);
     setItems(p=>{const i=p.findIndex(x=>x.id===l.id); return i<0?[...p,l]:p.map(x=>x.id===l.id?l:x);});
   };
   const del = id => {
@@ -1715,7 +1797,7 @@ export default function App() {
                   <div className={"card"+(sel?" sel":"")} key={l.id}
                     onClick={()=>cmpMode?toggleCmp(l.id):setView({page:"detail",id:l.id})}>
                     {cmpMode&&<div className={"chk"+(sel?" on":"")}>{sel?"✓":""}</div>}
-                    {l.photo?<img src={l.photo} className="thumb" alt="" onError={e=>e.target.style.display="none"}/>:<Tile l={l}/>}
+                    {l.photo?<img src={photoSrc(l.photo)} className="thumb" alt="" onError={e=>e.target.style.display="none"}/>:<Tile l={l}/>}
                     <div style={{minWidth:0,flex:1}}>
                       <div className="nm">{l.favorite&&<span style={{color:"var(--star)",marginRight:4}}>★</span>}{l.name}</div>
                       <div className="fl">{st&&<span className="badge" style={{background:st.color}}/>}{l.flavor||l.nicotine}</div>

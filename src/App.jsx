@@ -9,10 +9,17 @@ import { Share } from "@capacitor/share";
 import { StatusBar, Style } from "@capacitor/status-bar";
 
 /* ── storage ── */
-async function getIds(idsKey) {
-  const { value } = await Preferences.get({ key: idsKey });
-  try { return value ? JSON.parse(value) : []; } catch { return []; }
+// испорченное значение не затираем молча: перед тем как работать с умолчанием,
+// откладываем копию рядом (ключ_broken), её можно достать руками
+async function readJSON(key, d) {
+  const { value } = await Preferences.get({ key });
+  if (!value) return d;
+  try { return JSON.parse(value); }
+  catch { await Preferences.set({ key: key+"_broken", value }).catch(()=>{}); return d; }
 }
+// ключи, которые не удалось даже прочитать: в эту сессию их не перезаписываем
+const unread = new Set();
+const getIds = idsKey => readJSON(idsKey, []);
 async function setIds(idsKey, ids) {
   await Preferences.set({ key: idsKey, value: JSON.stringify(ids) });
 }
@@ -121,6 +128,7 @@ const L = {
     mismatch: "Не сходится", recorded: d => `Записал +${d}`, matches: "Сходится с записями",
     leftBody: (c, n) => `сегодня ${c} ${L.ru.sticksWord(c)} · в пачке осталось ${n}${n===0?" — пачка кончилась":""}`,
     badAnswer: "Не понял ответ", badAnswerBody: i => `«${i}» — нужно число. Введи остаток в приложении.`,
+    staleAnswer: "Ответ не записан", staleAnswerBody: "Напоминание было про другую пачку. Введи остаток в приложении.",
     sticksDefault: "Стики",
     notifPackTitle: "Сколько стиков осталось в пачке?", notifNoPackTitle: "Сколько выкурил сегодня?",
     notifPackBody: (name, left, size) => `${name} — по записям ${left} из ${size}`, notifNoPackBody: "Открой счётчик и отметь пачку",
@@ -205,6 +213,7 @@ const L = {
     mismatch: "Doesn't add up", recorded: d => `Logged +${d}`, matches: "Matches the log",
     leftBody: (c, n) => `today ${c} ${L.en.sticksWord(c)} · ${n} left in the pack${n===0?" — pack is empty":""}`,
     badAnswer: "Didn't get that", badAnswerBody: i => `“${i}” — a number is needed. Enter what's left in the app.`,
+    staleAnswer: "Answer not saved", staleAnswerBody: "That reminder was about another pack. Enter what's left in the app.",
     sticksDefault: "Sticks",
     notifPackTitle: "How many sticks are left in the pack?", notifNoPackTitle: "How many did you smoke today?",
     notifPackBody: (name, left, size) => `${name} — logged ${left} of ${size}`, notifNoPackBody: "Open the tracker and log a pack",
@@ -273,7 +282,7 @@ const GEMINI_MODEL = "gemini-3.1-flash-lite-preview";
 // список моделей — бесплатный запрос, по нему видно, рабочий ли ключ
 async function checkGeminiKey(key, signal) {
   let resp;
-  try { resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?pageSize=1&key=${encodeURIComponent(key)}`, { signal }); }
+  try { resp = await fetch("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1", { signal, headers:{"x-goog-api-key":key} }); }
   catch (e) { if (e?.name==="AbortError") throw e; return { state:"net" }; }
   if (resp.ok) return { state:"ok" };
   const d = await resp.json().catch(()=>null);
@@ -281,8 +290,8 @@ async function checkGeminiKey(key, signal) {
 }
 async function aiSearch(query, type, lang, key) {
   const resp = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(key)}`,
-    { method:"POST", headers:{"Content-Type":"application/json"},
+    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
+    { method:"POST", headers:{"Content-Type":"application/json", "x-goog-api-key":key},
       body: JSON.stringify({ contents:[{role:"user",parts:[{text:typeCfg(type, lang).ai(query)}]}], generationConfig:{temperature:0.1} }) }
   );
   const d = await resp.json();
@@ -309,13 +318,13 @@ const APP_DEFAULT = { currency:"USD", lang:"ru", theme:"dark", ai:true, geminiKe
 const CURRENCIES = { USD:{ru:"$", en:"$"}, EUR:{ru:"€", en:"€"}, RUB:{ru:"₽", en:"₽"}, RSD:{ru:"дин", en:"din"} };
 const THEMES = ["dark","light"];
 async function loadSettings(trkCfg) {
-  try {
-    const { value } = await Preferences.get({ key: "app_cfg" });
-    // валюта раньше лежала в настройках счётчика
-    return { ...APP_DEFAULT, ...(trkCfg.currency?{currency:trkCfg.currency}:{}), ...(value?JSON.parse(value):{}) };
-  } catch { return APP_DEFAULT; }
+  let saved;
+  try { saved = await readJSON("app_cfg", {}); }
+  catch { unread.add("app_cfg"); saved = {}; }
+  // валюта раньше лежала в настройках счётчика
+  return { ...APP_DEFAULT, ...(trkCfg.currency?{currency:trkCfg.currency}:{}), ...saved };
 }
-const saveSettings = v => Preferences.set({ key: "app_cfg", value: JSON.stringify(v) });
+const saveSettings = v => { if (!unread.has("app_cfg")) Preferences.set({ key: "app_cfg", value: JSON.stringify(v) }); };
 const Ctx = createContext({ cur:"$", lang:"ru", t:makeT("ru"), ai:{on:false, key:""} });
 const useCur = () => useContext(Ctx).cur;
 const useT = () => useContext(Ctx).t;
@@ -323,13 +332,13 @@ const useTypeCfg = type => typeCfg(type, useContext(Ctx).lang);
 
 async function loadTracker() {
   const get = async (k, d) => {
-    try { const { value } = await Preferences.get({ key: "trk_"+k }); return value ? JSON.parse(value) : d; }
-    catch { return d; }
+    try { return await readJSON("trk_"+k, d); }
+    catch { unread.add("trk_"+k); return d; }
   };
   const [packs, log, cfg] = await Promise.all(["packs","log","cfg"].map(k => get(k, TRK_DEFAULT[k])));
   return { packs, log, cfg: {...TRK_DEFAULT.cfg, ...cfg} };
 }
-const saveTracker = (k, v) => Preferences.set({ key: "trk_"+k, value: JSON.stringify(v) });
+const saveTracker = (k, v) => { if (!unread.has("trk_"+k)) Preferences.set({ key: "trk_"+k, value: JSON.stringify(v) }); };
 
 const packLeft = (p, log) => p ? p.size - log.reduce((s,e)=>e.pack===p.id?s+e.n:s, 0) : 0;
 const dayTotals = log => {
@@ -360,7 +369,7 @@ const reminderPayload = (pack, left, name, t) => ({
   title: pack ? t("notifPackTitle") : t("notifNoPackTitle"),
   body: pack ? t("notifPackBody", name, left, pack.size) : t("notifNoPackBody"),
   actionTypeId: pack ? "CHECKIN" : undefined,
-  extra: { kind: "checkin" },
+  extra: { kind: "checkin", pack: pack?.id },
   autoCancel: true,
   isExactNotification: false,
 });
@@ -368,8 +377,15 @@ const notifyResult = (id, title, body) => {
   if (!NATIVE||id==null) return;
   LocalNotifications.schedule({ notifications: [{ id, title, body, autoCancel: true, isExactNotification: false, extra: { kind: "summary" } }] }).catch(() => {});
 };
-async function syncReminder(cfg, pack, left, name, t) {
+// вызовы идут строго по очереди, и из ожидающих выполняется только последний —
+// иначе старый вызов (напоминание вкл.) мог завести будильники после нового (выкл.)
+let remindChain = Promise.resolve(), remindGen = 0;
+function syncReminder(...args) {
   if (!NATIVE) return;
+  const gen = ++remindGen;
+  remindChain = remindChain.then(()=>gen===remindGen && doSyncReminder(...args));
+}
+async function doSyncReminder(cfg, pack, left, name, t) {
   try {
     await actionsReady;
     // cancel/schedule плагина заодно убирают видимое уведомление с тем же id —
@@ -540,7 +556,7 @@ function downloadText(text, name) {
 // View Transitions: браузер снимает старый экран и анимирует его уход вместе с появлением нового.
 // nav — направление (fwd/back/fade/tab-r/tab-l/sheet), по нему css выбирает анимацию
 const VT = typeof document!=="undefined" && !!document.startViewTransition;
-let vtQueue = null, vtRunning = false;
+let vtQueue = null, vtRunning = false, vtCur = null;
 function animate(nav, fn) {
   // вложенный вызов внутри перехода — уже часть его, направление задал внешний
   if (vtRunning) return fn();
@@ -554,7 +570,9 @@ function animate(nav, fn) {
     const fns = vtQueue; vtQueue = null; vtRunning = true;
     try { flushSync(()=>fns.forEach(f=>f())); } finally { vtRunning = false; }
   });
-  const done = ()=>{ if (!vtQueue) delete document.documentElement.dataset.nav; };
+  vtCur = vt;
+  // прерванный более новым переходом не стирает его направление
+  const done = ()=>{ if (vtCur===vt) { vtCur = null; delete document.documentElement.dataset.nav; } };
   vt.finished.then(done, done);
 }
 const DEPTH = { list:0, settings:1, compare:1, detail:1 };
@@ -713,7 +731,14 @@ function Chart({data}) {
   );
 }
 
+// открытый лайтбокс перехватывает системный «назад»
+let closeLightbox = null;
 function Lightbox({src, onClose}) {
+  useEffect(()=>{
+    if (!src) return;
+    closeLightbox = onClose;
+    return ()=>{ closeLightbox = null; };
+  },[src,onClose]);
   if (!src) return null;
   return <div className="lightbox" onClick={onClose}><img src={src} alt=""/></div>;
 }
@@ -1343,7 +1368,7 @@ export default function App() {
     if (!NATIVE) return;
     const sub = LocalNotifications.addListener("localNotificationActionPerformed", a=>{
       const kind = a.notification?.extra?.kind;
-      if (kind==="checkin"||kind==="summary") setPendingAct({input:a.inputValue, id:a.notification.id, kind});
+      if (kind==="checkin"||kind==="summary") setPendingAct({input:a.inputValue, id:a.notification.id, kind, pack:a.notification.extra.pack});
     });
     return ()=>{ sub.then(h=>h.remove()); };
   },[]);
@@ -1386,7 +1411,8 @@ export default function App() {
   };
 
   backRef.current = () => {
-    if (sheet) setSheet(null);
+    if (closeLightbox) closeLightbox();
+    else if (sheet) setSheet(null);
     else if (view.page==="list"&&cmpMode) { setCmpMode(false); setCmpIds([]); }
     else if (view.page==="list"&&tab!==TABS[0]) switchTab(TABS[0]);
     else if (view.page==="list") CapApp.exitApp();
@@ -1434,9 +1460,9 @@ export default function App() {
   /* tracker actions */
   const todayCount = log => dayTotals(log)[dayKey(Date.now())]||0;
   const addEntry = (n, kind) => {
-    const log = [...trk.log, {id:uid(), t:Date.now(), n, pack:curPack.id, ...(kind?{kind}:{})}];
-    setTrk(p=>({...p, log}));
-    return log;
+    const e = {id:uid(), t:Date.now(), n, pack:curPack.id, ...(kind?{kind}:{})};
+    setTrk(p=>({...p, log:[...p.log, e]}));
+    return [...trk.log, e];
   };
   // notifId — если ответили из шторки: Android 15+ не даёт такое уведомление удалить,
   // поэтому заменяем его итогом с тем же id (иначе оно так и висит с крутилкой)
@@ -1487,13 +1513,17 @@ export default function App() {
   useEffect(()=>{
     if (loading||!pendingAct) return;
     setPendingAct(null);
-    switchTab("tracker");
-    const {input, id, kind} = pendingAct;
-    if (kind==="summary"||!curPack) return;
-    const n = parseInt(input);
-    if (!isNaN(n)) return applyLeft(n, id);
-    if (input!=null) notifyResult(id, t("badAnswer"), t("badAnswerBody", input));
-    if (curLeft>0) setSheet("left");
+    const {input, id, kind, pack} = pendingAct;
+    // форму с несохранёнными правками не бросаем — итог всё равно придёт в шторку
+    const inForm = view.page==="form";
+    if (!inForm) switchTab("tracker");
+    if (kind==="summary") return;
+    // напоминание висело в шторке, а пачку с тех пор сменили или отменили
+    const stale = !curPack || (pack && pack!==curPack.id);
+    const n = input!=null && /^\d+$/.test(input.trim()) ? Number(input.trim()) : NaN;
+    if (!stale && !isNaN(n)) return applyLeft(n, id);
+    if (input!=null) notifyResult(id, ...(stale ? [t("staleAnswer"), t("staleAnswerBody")] : [t("badAnswer"), t("badAnswerBody", input)]));
+    if (curLeft>0 && !inForm) setSheet("left");
   // срабатывает только на новое событие; остальное берём из текущего рендера
   // oxlint-disable-next-line react-hooks/exhaustive-deps
   },[loading,pendingAct]);

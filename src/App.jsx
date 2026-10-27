@@ -29,7 +29,10 @@ async function getIds(idsKey) {
   if (ids) return ids;
   const { key } = Object.values(TYPES).find(t => t.idsKey===idsKey);
   const { keys } = await Preferences.keys();
-  return keys.filter(k => k.startsWith(key)).map(k => k.slice(key.length));
+  const found = keys.filter(k => k.startsWith(key)).map(k => k.slice(key.length));
+  // сохраняем, чтобы не собирать заново на каждом запуске; не прочитавшийся список не трогаем
+  if (!unread.has(idsKey)) await setIds(idsKey, found);
+  return found;
 }
 async function setIds(idsKey, ids) {
   await Preferences.set({ key: idsKey, value: JSON.stringify(ids) });
@@ -333,14 +336,19 @@ async function aiSearch(query, type, lang, key) {
   return r;
 }
 // code — ключ текста ошибки в словаре
-const aiErr = code => Object.assign(new Error(code), { code });
+// aiCode, а не code: code бывает у DOMException и ошибок плагинов
+const aiErr = aiCode => Object.assign(new Error(aiCode), { aiCode });
 const NICOTINE = ["20 light","40 strong"];
 // модель может вернуть число или объект вместо строки — в форму берём только строки
 const aiField = (k, v) => {
   if (typeof v==="number") v = String(v);
   if (typeof v!=="string" || !v.trim()) return null;
   if (k!=="nicotine") return v.trim();
-  return NICOTINE.find(n => n===v.trim() || n.startsWith(parseInt(v)+" ")) || null;
+  if (NICOTINE.includes(v.trim())) return v.trim();
+  // крепость — к одной из двух кнопок: «2%» = 20 мг/мл; до 30 мг — light, больше — strong
+  const n = parseFloat(v.replace(",", "."));
+  const mg = /%/.test(v) ? n*10 : n;
+  return !(mg>0) ? null : mg<=30 ? NICOTINE[0] : NICOTINE[1];
 };
 
 /* ── tracker ── */
@@ -364,12 +372,14 @@ async function loadSettings(trkCfg) {
   return { ...APP_DEFAULT, ...(trkCfg.currency?{currency:trkCfg.currency}:{}), ...saved };
 }
 const saveSettings = v => unread.has("app_cfg") ? Promise.resolve() : Preferences.set({ key: "app_cfg", value: JSON.stringify(v) });
-// ошибка записи — сразу окном (flash виден не на всех экранах); не чаще раза в 30 с —
-// счётчик пишет на каждый +1
-let lastStoreFail = 0;
-const reportStoreFail = (lang, e) => {
-  if (Date.now()-lastStoreFail < 30000) return;
-  lastStoreFail = Date.now();
+// ошибка записи — сразу окном (flash виден не на всех экранах). Фоновые записи (счётчик пишет
+// на каждый +1) — не чаще раза в 30 с; сохранение карточки — всегда, это отдельное действие
+let lastAutoFail = 0;
+const reportStoreFail = (lang, e, auto) => {
+  if (auto) {
+    if (Date.now()-lastAutoFail < 30000) return;
+    lastAutoFail = Date.now();
+  }
   alert(makeT(lang)("storeFail") + (e?.message||String(e)));
 };
 const Ctx = createContext({ cur:"$", lang:"ru", t:makeT("ru"), ai:{on:false, key:""} });
@@ -379,13 +389,16 @@ const useTypeCfg = type => typeCfg(type, useContext(Ctx).lang);
 
 // пачки и журнал — одним ключом trk_data: открытие пачки меняет оба, и записи не должны разойтись.
 // trk_packs/trk_log — старый формат (и старые бэкапы): читаем их, пока trk_data нет
-const isTrkData = v => isObj(v) && Array.isArray(v.packs) && Array.isArray(v.log);
+// и элементы: одна кривая запись в журнале уронила бы packLeft при каждом рендере
+const isPacks = v => Array.isArray(v) && v.every(p => isObj(p) && typeof p.size==="number");
+const isLog = v => Array.isArray(v) && v.every(e => isObj(e) && typeof e.n==="number" && typeof e.t==="number");
+const isTrkData = v => isObj(v) && isPacks(v.packs) && isLog(v.log);
 async function loadTracker() {
   const [data, cfg] = await Promise.all([readJSON("trk_data", null, isTrkData), readJSON("trk_cfg", TRK_DEFAULT.cfg)]);
   const withCfg = d => ({ packs:d.packs, log:d.log, cfg: {...TRK_DEFAULT.cfg, ...cfg} });
   // trk_data не прочитался — не лезем в старые ключи: после миграции их уже нет, был бы пустой счётчик
   if (data || unread.has("trk_data")) return withCfg(data || TRK_DEFAULT);
-  const [packs, log] = await Promise.all([readJSON("trk_packs", TRK_DEFAULT.packs, Array.isArray), readJSON("trk_log", TRK_DEFAULT.log, Array.isArray)]);
+  const [packs, log] = await Promise.all([readJSON("trk_packs", TRK_DEFAULT.packs, isPacks), readJSON("trk_log", TRK_DEFAULT.log, isLog)]);
   if (unread.has("trk_packs")||unread.has("trk_log")) {
     // старое не прочиталось — нельзя записать вместо него пустое
     unread.add("trk_data");
@@ -582,7 +595,8 @@ async function makeBackup(withKey = true) {
   if (!withKey) {
     // и сырая копия испорченных настроек: в ней тоже может быть ключ
     delete data.app_cfg_broken;
-    if (data.app_cfg) try { const c = JSON.parse(data.app_cfg); delete c.geminiKey; data.app_cfg = JSON.stringify(c); } catch {}
+    // испорченный app_cfg не разобрать — не отдаём его вовсе, ключ мог остаться внутри
+    if (data.app_cfg) try { const c = JSON.parse(data.app_cfg); delete c.geminiKey; data.app_cfg = JSON.stringify(c); } catch { delete data.app_cfg; }
   }
   return JSON.stringify({ app: BACKUP_APP, v: 1, created: new Date().toISOString(), data });
 }
@@ -593,11 +607,15 @@ const parseBackup = text => {
 // сначала пишем всё из файла, потом убираем лишнее — если запись оборвётся, старое не потеряется
 async function restoreBackup(b) {
   const data = {...b.data};
-  // в отправленном файле ключа нет — оставляем тот, что уже на телефоне
-  try {
-    const c = JSON.parse(data.app_cfg), key = (await readJSON("app_cfg", {})).geminiKey;
-    if (c && !c.geminiKey && key) data.app_cfg = JSON.stringify({...c, geminiKey:key});
-  } catch {}
+  // в отправленном файле (и в старых бэкапах, где app_cfg ещё не было) ключа нет —
+  // оставляем тот, что уже на телефоне
+  const key = (await readJSON("app_cfg", {})).geminiKey;
+  if (key) {
+    let c = null;
+    try { c = JSON.parse(data.app_cfg); } catch {}
+    if (!isObj(c)) c = {};
+    if (!c.geminiKey) data.app_cfg = JSON.stringify({...c, geminiKey:key});
+  }
   // список ключей — после чтения выше: оно могло завести app_cfg_broken, его тоже убрать
   const { keys } = await Preferences.keys();
   await Promise.all(Object.entries(data).filter(([, v]) => typeof v==="string").map(([key, value]) => Preferences.set({ key, value })));
@@ -646,13 +664,20 @@ function animate(nav, fn) {
   // до снимка экран ещё старый и нажимается: второе нажатие повторило бы то же действие
   // (дважды записать остаток, открыть две пачки)
   document.body.style.pointerEvents = "none";
-  const vt = document.startViewTransition(()=>{
+  const flush = ()=>{
     const fns = vtQueue; vtQueue = null; vtRunning = true;
     let err = null;
     try { flushSync(()=>fns.forEach(f=>{ try { f(); } catch (e) { err ??= e; } })); }
     finally { vtRunning = false; document.body.style.pointerEvents = ""; }
     if (err) reportError(err);
-  });
+  };
+  let vt;
+  try { vt = document.startViewTransition(flush); }
+  catch {
+    // переход не запустился — применяем без анимации, иначе экран так и остался бы без нажатий
+    delete document.documentElement.dataset.nav;
+    return flush();
+  }
   vtCur = vt;
   // прерванный более новым переходом не стирает его направление
   const done = ()=>{ if (vtCur===vt) { vtCur = null; delete document.documentElement.dataset.nav; } };
@@ -1084,8 +1109,10 @@ function SettingsPage({app, onApp, trkCfg, onTrkCfg, onTest, flash, onFlash, onB
     run("restore", async ()=>{
       const b = parseBackup(await file.text());
       if (!b) return onFlash({err:true, text:t("restoreBad")});
-      const made = new Date(b.created);
-      if (!confirm(t("restoreAsk", !isNaN(made) && fmtDate(localDate(made))))) return;
+      // дата только для вопроса: кривая (null, «abc», за пределами Date) — спрашиваем без неё
+      let made = null;
+      try { if (typeof b.created==="string") made = fmtDate(localDate(new Date(b.created))); } catch {}
+      if (!confirm(t("restoreAsk", made))) return;
       await restoreBackup(b);
       location.reload();
     });
@@ -1238,7 +1265,7 @@ function Form({initial, type, onSave, onCancel}) {
       const keys = ["manufacturer","name","flavor","volume", ...(cfg.showNicotine?["nicotine"]:[])];
       // поле, которое поправили, пока ждали ответа, не трогаем
       setF(p=>({...p, ...Object.fromEntries(keys.map(k=>[k, p[k]!==before[k] ? p[k] : aiField(k, r[k])??p[k]]))}));
-    } catch (e) { setErr(t("errPrefix") + (e?.name==="TimeoutError" ? t("aiTimeout") : e?.code ? t(e.code) : e?.message || String(e))); }
+    } catch (e) { setErr(t("errPrefix") + (e?.name==="TimeoutError" ? t("aiTimeout") : e?.aiCode ? t(e.aiCode) : e?.message || String(e))); }
     setBusy(false);
   };
 
@@ -1414,8 +1441,9 @@ export default function App() {
   const [app, setApp] = useState(APP_DEFAULT);
   // also — остальные изменения того же действия: идут в тот же переход, чтобы старый экран
   // сняли целиком до них, а не наполовину обновлённым
-  const setView = (v, also) => animate(navDir(view, v), ()=>{ also?.(); setViewNow(v); });
-  const setSheet = (s, also) => animate("sheet", ()=>{ also?.(); setSheetNow(s); });
+  // экран меняется, даже если also упал: иначе шторка осталась бы открытой и действие повторили бы
+  const setView = (v, also) => animate(navDir(view, v), ()=>{ try { also?.(); } finally { setViewNow(v); } });
+  const setSheet = (s, also) => animate("sheet", ()=>{ try { also?.(); } finally { setSheetNow(s); } });
 
   useEffect(()=>{
     const types = Object.keys(TYPES);
@@ -1438,9 +1466,9 @@ export default function App() {
   const langRef = useRef(app.lang);
   langRef.current = app.lang;
   const storeFail = e => reportStoreFail(langRef.current, e);
-  useEffect(()=>{ if (!loading) saveTracker("data",{packs:trk.packs, log:trk.log}).catch(e=>reportStoreFail(langRef.current, e)); },[loading,trk.packs,trk.log]);
-  useEffect(()=>{ if (!loading) saveTracker("cfg",trk.cfg).catch(e=>reportStoreFail(langRef.current, e)); },[loading,trk.cfg]);
-  useEffect(()=>{ if (!loading) saveSettings(app).catch(e=>reportStoreFail(langRef.current, e)); },[loading,app]);
+  useEffect(()=>{ if (!loading) saveTracker("data",{packs:trk.packs, log:trk.log}).catch(e=>reportStoreFail(langRef.current, e, true)); },[loading,trk.packs,trk.log]);
+  useEffect(()=>{ if (!loading) saveTracker("cfg",trk.cfg).catch(e=>reportStoreFail(langRef.current, e, true)); },[loading,trk.cfg]);
+  useEffect(()=>{ if (!loading) saveSettings(app).catch(e=>reportStoreFail(langRef.current, e, true)); },[loading,app]);
 
   const {lang, theme} = app;
   const t = useMemo(()=>makeT(lang),[lang]);

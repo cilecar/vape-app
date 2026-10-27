@@ -9,17 +9,28 @@ import { Share } from "@capacitor/share";
 import { StatusBar, Style } from "@capacitor/status-bar";
 
 /* ── storage ── */
-// испорченное значение не затираем молча: перед тем как работать с умолчанием,
-// откладываем копию рядом (ключ_broken), её можно достать руками
-async function readJSON(key, d) {
-  const { value } = await Preferences.get({ key });
-  if (!value) return d;
-  try { return JSON.parse(value); }
-  catch { await Preferences.set({ key: key+"_broken", value }).catch(()=>{}); return d; }
-}
 // ключи, которые не удалось даже прочитать: в эту сессию их не перезаписываем
 const unread = new Set();
-const getIds = idsKey => readJSON(idsKey, []);
+const isObj = v => !!v && typeof v==="object" && !Array.isArray(v);
+// испорченное значение (не json или не той формы — ok) не затираем молча: перед тем как
+// работать с умолчанием, откладываем копию рядом (ключ_broken), её можно достать руками
+async function readJSON(key, d, ok = isObj) {
+  let value;
+  try { ({ value } = await Preferences.get({ key })); }
+  catch { unread.add(key); return d; }
+  if (!value) return d;
+  try { const v = JSON.parse(value); if (ok(v)) return v; } catch {}
+  await Preferences.set({ key: key+"_broken", value }).catch(()=>{});
+  return d;
+}
+// списка нет или он испорчен — собираем заново по ключам самих карточек, иначе они пропадут из приложения
+async function getIds(idsKey) {
+  const ids = await readJSON(idsKey, null, Array.isArray);
+  if (ids) return ids;
+  const { key } = Object.values(TYPES).find(t => t.idsKey===idsKey);
+  const { keys } = await Preferences.keys();
+  return keys.filter(k => k.startsWith(key)).map(k => k.slice(key.length));
+}
 async function setIds(idsKey, ids) {
   await Preferences.set({ key: idsKey, value: JSON.stringify(ids) });
 }
@@ -114,7 +125,7 @@ const L = {
     backupSave: "Сохранить бэкап", backupShare: "Отправить файл", restore: "Восстановить из файла",
     backupSaved: p => `Сохранено: ${p}`, backupFail: "Не удалось сохранить: ",
     restoreAsk: d => `Все текущие данные заменятся данными из бэкапа${d?" от "+d:""}. Продолжить?`,
-    restoreBad: "Это не файл бэкапа этого приложения", restoreFail: "Не удалось восстановить: ",
+    restoreBad: "Это не файл бэкапа этого приложения", restoreFail: "Не удалось восстановить: ", shareFail: "Не удалось отправить: ",
     ai: "ИИ-распознавание", aiTitle: "Заполнять карточку через Gemini", aiHint: "По названию находит бренд, вкус, объём и крепость",
     aiKey: "Ключ Gemini API", aiKeyHint: "Получить бесплатно: aistudio.google.com/apikey. Ключ хранится на телефоне. В сохранённый бэкап он попадает, в отправленный файл — нет",
     aiKeyEmpty: "Ключ не указан — поиск в интернете при добавлении отключён",
@@ -123,7 +134,7 @@ const L = {
     // сравнение
     need2: "Нужно 2 позиции", compare: "Сравнение", byCrit: "По критериям", price: "Цена",
     // форма / карточка
-    webSearch: "Поиск в интернете", find: "Найти", errPrefix: "Ошибка: ", aiTimeout: "Gemini не ответил за 30 секунд", storeFail: "Не сохранилось в памяти телефона: ", photoErr: "Не удалось обработать фото.",
+    webSearch: "Поиск в интернете", find: "Найти", errPrefix: "Ошибка: ", aiTimeout: "Gemini не ответил за 30 секунд", aiEmpty: "Gemini ничего не нашёл — попробуй уточнить запрос", aiBadReply: "Не удалось разобрать ответ Gemini", storeFail: "Не сохранилось в памяти телефона: ", photoErr: "Не удалось обработать фото.",
     manufacturer: "Производитель", name: "Название", flavorDesc: "Описание вкуса", strength: "Крепость",
     status: "Статус", notes: "Заметки", ownPhoto: "Своё фото", camera: "📷 Камера", gallery: "🖼 Галерея",
     favOn: "★ Избранное", favOff: "☆ В избранное", avgShort: "ср. оценка", avgLong: "средняя оценка", taste: "Вкус",
@@ -203,14 +214,14 @@ const L = {
     backupSave: "Save backup", backupShare: "Send file", restore: "Restore from file",
     backupSaved: p => `Saved: ${p}`, backupFail: "Couldn't save: ",
     restoreAsk: d => `All current data will be replaced with the backup${d?" from "+d:""}. Continue?`,
-    restoreBad: "This isn't a backup file of this app", restoreFail: "Couldn't restore: ",
+    restoreBad: "This isn't a backup file of this app", restoreFail: "Couldn't restore: ", shareFail: "Couldn't share: ",
     ai: "AI recognition", aiTitle: "Fill in cards with Gemini", aiHint: "Finds brand, flavor, volume and strength by name",
     aiKey: "Gemini API key", aiKeyHint: "Get one for free: aistudio.google.com/apikey. The key is stored on the phone. It's included in saved backups but not in shared files",
     aiKeyEmpty: "No key — web search when adding items is disabled",
     aiKeyChecking: "Checking the key…", aiKeyOk: "✓ The key works", aiKeyBad: "The key doesn't work: ", aiKeyNet: "Couldn't check — no connection to Google",
     aiOff: "AI search is turned off in settings", aiNoKey: "No Gemini key — add one in settings",
     need2: "Need 2 items", compare: "Compare", byCrit: "By criteria", price: "Price",
-    webSearch: "Search the web", find: "Find", errPrefix: "Error: ", aiTimeout: "Gemini didn't answer in 30 seconds", storeFail: "Couldn't save to the phone: ", photoErr: "Couldn't process the photo.",
+    webSearch: "Search the web", find: "Find", errPrefix: "Error: ", aiTimeout: "Gemini didn't answer in 30 seconds", aiEmpty: "Gemini found nothing — try a more specific query", aiBadReply: "Couldn't read Gemini's reply", storeFail: "Couldn't save to the phone: ", photoErr: "Couldn't process the photo.",
     manufacturer: "Manufacturer", name: "Name", flavorDesc: "Flavor", strength: "Strength",
     status: "Status", notes: "Notes", ownPhoto: "Photo", camera: "📷 Camera", gallery: "🖼 Gallery",
     favOn: "★ Favorite", favOff: "☆ Add to favorites", avgShort: "avg rating", avgLong: "average rating", taste: "Flavor",
@@ -307,14 +318,30 @@ async function aiSearch(query, type, lang, key) {
       body: JSON.stringify({ contents:[{role:"user",parts:[{text:typeCfg(type, lang).ai(query)}]}], generationConfig:{temperature:0.1} }),
       signal: AbortSignal.timeout(AI_TIMEOUT) }
   );
-  // при сбое сервера в ответе бывает html, а не json
-  const d = await resp.json().catch(()=>null);
+  // при сбое сервера (или прокси, портале wi-fi) в ответе бывает html, а не json;
+  // таймаут во время чтения тела — пробрасываем как есть
+  let d = null;
+  try { d = await resp.json(); } catch (e) { if (e?.name==="TimeoutError") throw e; }
   if (!resp.ok || d?.error) throw new Error(d?.error?.message || `HTTP ${resp.status}`);
+  if (!d) throw aiErr("aiBadReply");
+  // пусто — например, запрос отсёк фильтр безопасности
   const text = (d.candidates?.[0]?.content?.parts||[]).map(p=>p.text||"").join("");
   const m = text.match(/\{[\s\S]*\}/);
-  if (!m) throw new Error("no json");
-  return JSON.parse(m[0]);
+  if (!m) throw aiErr("aiEmpty");
+  let r; try { r = JSON.parse(m[0]); } catch {}
+  if (!isObj(r)) throw aiErr("aiBadReply");
+  return r;
 }
+// code — ключ текста ошибки в словаре
+const aiErr = code => Object.assign(new Error(code), { code });
+const NICOTINE = ["20 light","40 strong"];
+// модель может вернуть число или объект вместо строки — в форму берём только строки
+const aiField = (k, v) => {
+  if (typeof v==="number") v = String(v);
+  if (typeof v!=="string" || !v.trim()) return null;
+  if (k!=="nicotine") return v.trim();
+  return NICOTINE.find(n => n===v.trim() || n.startsWith(parseInt(v)+" ")) || null;
+};
 
 /* ── tracker ── */
 const DAY_START = 4; // до 4 утра считается ещё вчерашним днём
@@ -332,13 +359,19 @@ const APP_DEFAULT = { currency:"USD", lang:"ru", theme:"dark", ai:true, geminiKe
 const CURRENCIES = { USD:{ru:"$", en:"$"}, EUR:{ru:"€", en:"€"}, RUB:{ru:"₽", en:"₽"}, RSD:{ru:"дин", en:"din"} };
 const THEMES = ["dark","light"];
 async function loadSettings(trkCfg) {
-  let saved;
-  try { saved = await readJSON("app_cfg", {}); }
-  catch { unread.add("app_cfg"); saved = {}; }
+  const saved = await readJSON("app_cfg", {});
   // валюта раньше лежала в настройках счётчика
   return { ...APP_DEFAULT, ...(trkCfg.currency?{currency:trkCfg.currency}:{}), ...saved };
 }
-const saveSettings = v => { if (!unread.has("app_cfg")) Preferences.set({ key: "app_cfg", value: JSON.stringify(v) }); };
+const saveSettings = v => unread.has("app_cfg") ? Promise.resolve() : Preferences.set({ key: "app_cfg", value: JSON.stringify(v) });
+// ошибка записи — сразу окном (flash виден не на всех экранах); не чаще раза в 30 с —
+// счётчик пишет на каждый +1
+let lastStoreFail = 0;
+const reportStoreFail = (lang, e) => {
+  if (Date.now()-lastStoreFail < 30000) return;
+  lastStoreFail = Date.now();
+  alert(makeT(lang)("storeFail") + (e?.message||String(e)));
+};
 const Ctx = createContext({ cur:"$", lang:"ru", t:makeT("ru"), ai:{on:false, key:""} });
 const useCur = () => useContext(Ctx).cur;
 const useT = () => useContext(Ctx).t;
@@ -346,27 +379,26 @@ const useTypeCfg = type => typeCfg(type, useContext(Ctx).lang);
 
 // пачки и журнал — одним ключом trk_data: открытие пачки меняет оба, и записи не должны разойтись.
 // trk_packs/trk_log — старый формат (и старые бэкапы): читаем их, пока trk_data нет
+const isTrkData = v => isObj(v) && Array.isArray(v.packs) && Array.isArray(v.log);
 async function loadTracker() {
-  const get = async (k, d) => {
-    try { return await readJSON("trk_"+k, d); }
-    catch { unread.add("trk_"+k); return d; }
-  };
-  const [data, cfg] = await Promise.all([get("data", null), get("cfg", TRK_DEFAULT.cfg)]);
-  if (data) return { ...data, cfg: {...TRK_DEFAULT.cfg, ...cfg} };
-  const [packs, log] = await Promise.all([get("packs", TRK_DEFAULT.packs), get("log", TRK_DEFAULT.log)]);
-  // старое не прочиталось — нельзя записать вместо него пустое
-  if (unread.has("trk_packs")||unread.has("trk_log")) unread.add("trk_data");
-  return { packs, log, cfg: {...TRK_DEFAULT.cfg, ...cfg} };
-}
-let legacyTrk = true;
-const saveTracker = (k, v) => {
-  if (unread.has("trk_"+k)) return;
-  const w = Preferences.set({ key: "trk_"+k, value: JSON.stringify(v) });
-  if (k==="data" && legacyTrk) {
-    legacyTrk = false;
-    w.then(()=>Preferences.remove({ key: "trk_packs" })).then(()=>Preferences.remove({ key: "trk_log" })).catch(()=>{});
+  const [data, cfg] = await Promise.all([readJSON("trk_data", null, isTrkData), readJSON("trk_cfg", TRK_DEFAULT.cfg)]);
+  const withCfg = d => ({ packs:d.packs, log:d.log, cfg: {...TRK_DEFAULT.cfg, ...cfg} });
+  // trk_data не прочитался — не лезем в старые ключи: после миграции их уже нет, был бы пустой счётчик
+  if (data || unread.has("trk_data")) return withCfg(data || TRK_DEFAULT);
+  const [packs, log] = await Promise.all([readJSON("trk_packs", TRK_DEFAULT.packs, Array.isArray), readJSON("trk_log", TRK_DEFAULT.log, Array.isArray)]);
+  if (unread.has("trk_packs")||unread.has("trk_log")) {
+    // старое не прочиталось — нельзя записать вместо него пустое
+    unread.add("trk_data");
+  } else if (packs.length||log.length) {
+    // миграция: сначала новый ключ, потом удаляем старые; оборвётся — повторится при следующем запуске
+    try {
+      await Preferences.set({ key: "trk_data", value: JSON.stringify({ packs, log }) });
+      await Promise.all(["trk_packs","trk_log"].map(key => Preferences.remove({ key })));
+    } catch {}
   }
-};
+  return withCfg({ packs, log });
+}
+const saveTracker = (k, v) => unread.has("trk_"+k) ? Promise.resolve() : Preferences.set({ key: "trk_"+k, value: JSON.stringify(v) });
 
 const packLeft = (p, log) => p ? p.size - log.reduce((s,e)=>e.pack===p.id?s+e.n:s, 0) : 0;
 const dayTotals = log => {
@@ -537,9 +569,7 @@ async function shareCard(l, cfg, cur, t) {
       await navigator.share({files:[file],title:l.name}); return;
     }
   } catch {}
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a"); a.href=url; a.download=fname; a.click();
-  setTimeout(()=>URL.revokeObjectURL(url),2000);
+  downloadBlob(blob, fname);
 }
 
 /* ── backup ── */
@@ -549,7 +579,11 @@ async function makeBackup(withKey = true) {
   const { keys } = await Preferences.keys();
   const vals = await Promise.all(keys.map(k => Preferences.get({ key: k })));
   const data = Object.fromEntries(keys.map((k, i) => [k, vals[i].value]));
-  if (!withKey && data.app_cfg) try { const c = JSON.parse(data.app_cfg); delete c.geminiKey; data.app_cfg = JSON.stringify(c); } catch {}
+  if (!withKey) {
+    // и сырая копия испорченных настроек: в ней тоже может быть ключ
+    delete data.app_cfg_broken;
+    if (data.app_cfg) try { const c = JSON.parse(data.app_cfg); delete c.geminiKey; data.app_cfg = JSON.stringify(c); } catch {}
+  }
   return JSON.stringify({ app: BACKUP_APP, v: 1, created: new Date().toISOString(), data });
 }
 const parseBackup = text => {
@@ -558,15 +592,16 @@ const parseBackup = text => {
 };
 // сначала пишем всё из файла, потом убираем лишнее — если запись оборвётся, старое не потеряется
 async function restoreBackup(b) {
-  const { keys } = await Preferences.keys();
   const data = {...b.data};
   // в отправленном файле ключа нет — оставляем тот, что уже на телефоне
   try {
     const c = JSON.parse(data.app_cfg), key = (await readJSON("app_cfg", {})).geminiKey;
     if (c && !c.geminiKey && key) data.app_cfg = JSON.stringify({...c, geminiKey:key});
   } catch {}
-  for (const [k, v] of Object.entries(data)) if (typeof v==="string") await Preferences.set({ key: k, value: v });
-  for (const k of keys) if (typeof data[k]!=="string") await Preferences.remove({ key: k });
+  // список ключей — после чтения выше: оно могло завести app_cfg_broken, его тоже убрать
+  const { keys } = await Preferences.keys();
+  await Promise.all(Object.entries(data).filter(([, v]) => typeof v==="string").map(([key, value]) => Preferences.set({ key, value })));
+  await Promise.all(keys.filter(k => typeof data[k]!=="string").map(key => Preferences.remove({ key })));
 }
 const backupName = () => `vape-backup-${today()}-${new Date().toTimeString().slice(0,5).replace(":","")}.json`;
 // в «Документы»; имя с временем — файл от прошлой установки приложения перезаписать нельзя
@@ -587,11 +622,12 @@ async function shareBackupFile(json) {
   const { uri } = await Filesystem.writeFile({ path: name, data: json, directory: Directory.Cache, encoding: Encoding.UTF8 });
   await Share.share({ title: name, files: [uri] });
 }
-function downloadText(text, name) {
-  const url = URL.createObjectURL(new Blob([text], { type: "application/json" }));
+function downloadBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
   const a = document.createElement("a"); a.href = url; a.download = name; a.click();
   setTimeout(()=>URL.revokeObjectURL(url), 2000);
 }
+const downloadText = (text, name) => downloadBlob(new Blob([text], { type: "application/json" }), name);
 
 /* ── переходы ── */
 // View Transitions: браузер снимает старый экран и анимирует его уход вместе с появлением нового.
@@ -607,9 +643,15 @@ function animate(nav, fn) {
   if (!VT || matchMedia("(prefers-reduced-motion: reduce)").matches) return fn();
   document.documentElement.dataset.nav = nav;
   vtQueue = [fn];
+  // до снимка экран ещё старый и нажимается: второе нажатие повторило бы то же действие
+  // (дважды записать остаток, открыть две пачки)
+  document.body.style.pointerEvents = "none";
   const vt = document.startViewTransition(()=>{
     const fns = vtQueue; vtQueue = null; vtRunning = true;
-    try { flushSync(()=>fns.forEach(f=>f())); } finally { vtRunning = false; }
+    let err = null;
+    try { flushSync(()=>fns.forEach(f=>{ try { f(); } catch (e) { err ??= e; } })); }
+    finally { vtRunning = false; document.body.style.pointerEvents = ""; }
+    if (err) reportError(err);
   });
   vtCur = vt;
   // прерванный более новым переходом не стирает его направление
@@ -1028,7 +1070,7 @@ function SettingsPage({app, onApp, trkCfg, onTrkCfg, onTest, flash, onFlash, onB
   );
   const run = async (kind, fn) => {
     setBusy(kind);
-    try { await fn(); } catch (e) { onFlash({err:true, text:(kind==="restore"?t("restoreFail"):t("backupFail"))+(e?.message||String(e))}); }
+    try { await fn(); } catch (e) { onFlash({err:true, text:t({restore:"restoreFail", share:"shareFail"}[kind]||"backupFail")+(e?.message||String(e))}); }
     setBusy("");
   };
   const save = () => run("save", async ()=>onFlash({text:t("backupSaved", await saveBackupFile(await makeBackup()))}));
@@ -1042,7 +1084,8 @@ function SettingsPage({app, onApp, trkCfg, onTrkCfg, onTest, flash, onFlash, onB
     run("restore", async ()=>{
       const b = parseBackup(await file.text());
       if (!b) return onFlash({err:true, text:t("restoreBad")});
-      if (!confirm(t("restoreAsk", b.created && fmtDate(localDate(new Date(b.created)))))) return;
+      const made = new Date(b.created);
+      if (!confirm(t("restoreAsk", !isNaN(made) && fmtDate(localDate(made))))) return;
       await restoreBackup(b);
       location.reload();
     });
@@ -1194,8 +1237,8 @@ function Form({initial, type, onSave, onCancel}) {
       const r = await aiSearch(q||`${f.manufacturer} ${f.name}`, type, lang, ai.key);
       const keys = ["manufacturer","name","flavor","volume", ...(cfg.showNicotine?["nicotine"]:[])];
       // поле, которое поправили, пока ждали ответа, не трогаем
-      setF(p=>({...p, ...Object.fromEntries(keys.map(k=>[k, p[k]!==before[k] ? p[k] : r[k]||p[k]]))}));
-    } catch (e) { setErr(t("errPrefix") + (e?.name==="TimeoutError" ? t("aiTimeout") : e?.message || String(e))); }
+      setF(p=>({...p, ...Object.fromEntries(keys.map(k=>[k, p[k]!==before[k] ? p[k] : aiField(k, r[k])??p[k]]))}));
+    } catch (e) { setErr(t("errPrefix") + (e?.name==="TimeoutError" ? t("aiTimeout") : e?.code ? t(e.code) : e?.message || String(e))); }
     setBusy(false);
   };
 
@@ -1229,7 +1272,7 @@ function Form({initial, type, onSave, onCancel}) {
           <div>
             <label>{t("strength")}</label>
             <div className="row" style={{marginTop:0}}>
-              {["20 light","40 strong"].map(v=>(
+              {NICOTINE.map(v=>(
                 <button key={v} className={"btn"+(f.nicotine===v?"":" ghost")} onClick={()=>set("nicotine",v)}>{v}</button>
               ))}
             </div>
@@ -1386,14 +1429,18 @@ export default function App() {
       if (tr.cfg.remind && NATIVE) LocalNotifications.checkPermissions().then(({display})=>{
         if (display==="granted") return;
         setTrk(p=>({...p, cfg:{...p.cfg, remind:false}}));
-        setFlash({err:true, text:makeT(ap.lang)("notifLost")});
+        // при запуске открыт список, где flash не выводится, — поэтому окном
+        alert(makeT(ap.lang)("notifLost"));
       }).catch(()=>{});
     });
   },[]);
 
-  useEffect(()=>{ if (!loading) saveTracker("data",{packs:trk.packs, log:trk.log}); },[loading,trk.packs,trk.log]);
-  useEffect(()=>{ if (!loading) saveTracker("cfg",trk.cfg); },[loading,trk.cfg]);
-  useEffect(()=>{ if (!loading) saveSettings(app); },[loading,app]);
+  const langRef = useRef(app.lang);
+  langRef.current = app.lang;
+  const storeFail = e => reportStoreFail(langRef.current, e);
+  useEffect(()=>{ if (!loading) saveTracker("data",{packs:trk.packs, log:trk.log}).catch(e=>reportStoreFail(langRef.current, e)); },[loading,trk.packs,trk.log]);
+  useEffect(()=>{ if (!loading) saveTracker("cfg",trk.cfg).catch(e=>reportStoreFail(langRef.current, e)); },[loading,trk.cfg]);
+  useEffect(()=>{ if (!loading) saveSettings(app).catch(e=>reportStoreFail(langRef.current, e)); },[loading,app]);
 
   const {lang, theme} = app;
   const t = useMemo(()=>makeT(lang),[lang]);
@@ -1439,7 +1486,6 @@ export default function App() {
   const setItems = fn => setAllItems(p=>({...p,[tab]:fn(p[tab])}));
   const cfg = TYPES[tab] && typeCfg(tab, lang);
 
-  const storeFail = e => alert(t("storeFail") + (e?.message||String(e)));
   const upsert = l => {
     save(l,tab).catch(storeFail);
     setItems(p=>{const i=p.findIndex(x=>x.id===l.id); return i<0?[...p,l]:p.map(x=>x.id===l.id?l:x);});

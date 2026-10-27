@@ -98,10 +98,12 @@ const L = {
     backupSaved: p => `Сохранено: ${p}`, backupFail: "Не удалось сохранить: ",
     restoreAsk: d => `Все текущие данные заменятся данными из бэкапа${d?" от "+d:""}. Продолжить?`,
     restoreBad: "Это не файл бэкапа этого приложения", restoreFail: "Не удалось восстановить: ",
-    // статистика / сравнение
-    statsTitle: t => `Статистика · ${t}`, brands: "Брендов", rated: "С оценкой", favs: "Избранных",
-    minPrice: "Мин цена", maxPrice: "Макс цена", avgPrice: "Средн. цена", bestPer: (c, u) => `Лучший ${c}/${u}`,
-    avgRatings: "Средние оценки", top: "Топ по рейтингу",
+    ai: "ИИ-распознавание", aiTitle: "Заполнять карточку через Gemini", aiHint: "По названию находит бренд, вкус, объём и крепость",
+    aiKey: "Ключ Gemini API", aiKeyHint: "Получить бесплатно: aistudio.google.com/apikey. Ключ хранится на телефоне и попадает в бэкап",
+    aiKeyEmpty: "Ключ не указан — поиск в интернете при добавлении отключён",
+    aiKeyChecking: "Проверяю ключ…", aiKeyOk: "✓ Ключ работает", aiKeyBad: "Ключ не подходит: ", aiKeyNet: "Не удалось проверить — нет связи с Google",
+    aiOff: "ИИ-поиск выключен в настройках", aiNoKey: "Нет ключа Gemini — добавь его в настройках",
+    // сравнение
     need2: "Нужно 2 позиции", compare: "Сравнение", byCrit: "По критериям", price: "Цена",
     // форма / карточка
     webSearch: "Поиск в интернете", find: "Найти", errPrefix: "Ошибка: ", photoErr: "Не удалось обработать фото.",
@@ -183,9 +185,11 @@ const L = {
     backupSaved: p => `Saved: ${p}`, backupFail: "Couldn't save: ",
     restoreAsk: d => `All current data will be replaced with the backup${d?" from "+d:""}. Continue?`,
     restoreBad: "This isn't a backup file of this app", restoreFail: "Couldn't restore: ",
-    statsTitle: t => `Stats · ${t}`, brands: "Brands", rated: "Rated", favs: "Favorites",
-    minPrice: "Min price", maxPrice: "Max price", avgPrice: "Avg price", bestPer: (c, u) => `Best ${c}/${u}`,
-    avgRatings: "Average ratings", top: "Top rated",
+    ai: "AI recognition", aiTitle: "Fill in cards with Gemini", aiHint: "Finds brand, flavor, volume and strength by name",
+    aiKey: "Gemini API key", aiKeyHint: "Get one for free: aistudio.google.com/apikey. The key is stored on the phone and included in backups",
+    aiKeyEmpty: "No key — web search when adding items is disabled",
+    aiKeyChecking: "Checking the key…", aiKeyOk: "✓ The key works", aiKeyBad: "The key doesn't work: ", aiKeyNet: "Couldn't check — no connection to Google",
+    aiOff: "AI search is turned off in settings", aiNoKey: "No Gemini key — add one in settings",
     need2: "Need 2 items", compare: "Compare", byCrit: "By criteria", price: "Price",
     webSearch: "Search the web", find: "Find", errPrefix: "Error: ", photoErr: "Couldn't process the photo.",
     manufacturer: "Manufacturer", name: "Name", flavorDesc: "Flavor", strength: "Strength",
@@ -263,12 +267,20 @@ const compressImg = file => new Promise((res, rej) => {
 });
 
 /* ── ai ── */
-// ключ — в .env.local (см. .env.example), в git не попадает
-const GEMINI_KEY = import.meta.env.VITE_GEMINI_KEY;
+// ключ вписывается в настройках и хранится на телефоне
 const GEMINI_MODEL = "gemini-3.1-flash-lite-preview";
-async function aiSearch(query, type, lang) {
+// список моделей — бесплатный запрос, по нему видно, рабочий ли ключ
+async function checkGeminiKey(key, signal) {
+  let resp;
+  try { resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?pageSize=1&key=${encodeURIComponent(key)}`, { signal }); }
+  catch (e) { if (e?.name==="AbortError") throw e; return { state:"net" }; }
+  if (resp.ok) return { state:"ok" };
+  const d = await resp.json().catch(()=>null);
+  return { state:"bad", msg: d?.error?.message || `HTTP ${resp.status}` };
+}
+async function aiSearch(query, type, lang, key) {
   const resp = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_KEY}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(key)}`,
     { method:"POST", headers:{"Content-Type":"application/json"},
       body: JSON.stringify({ contents:[{role:"user",parts:[{text:typeCfg(type, lang).ai(query)}]}], generationConfig:{temperature:0.1} }) }
   );
@@ -291,7 +303,7 @@ const TABS = [...Object.keys(TYPES), "tracker"];
 const tabIndex = t => TABS.indexOf(t);
 
 /* ── settings ── */
-const APP_DEFAULT = { currency:"RUB", lang:"ru", theme:"dark" };
+const APP_DEFAULT = { currency:"RUB", lang:"ru", theme:"dark", ai:true, geminiKey:"" };
 // только подпись: уже введённые цены не пересчитываются
 const CURRENCIES = { RUB:{ru:"₽", en:"₽"}, RSD:{ru:"дин", en:"din"} };
 const THEMES = ["dark","light"];
@@ -303,7 +315,7 @@ async function loadSettings(trkCfg) {
   } catch { return APP_DEFAULT; }
 }
 const saveSettings = v => Preferences.set({ key: "app_cfg", value: JSON.stringify(v) });
-const Ctx = createContext({ cur:"₽", lang:"ru", t:makeT("ru") });
+const Ctx = createContext({ cur:"₽", lang:"ru", t:makeT("ru"), ai:{on:false, key:""} });
 const useCur = () => useContext(Ctx).cur;
 const useT = () => useContext(Ctx).t;
 const useTypeCfg = type => typeCfg(type, useContext(Ctx).lang);
@@ -567,6 +579,7 @@ const css = `
 .btn:disabled{opacity:.45}
 input,textarea{width:100%;background:var(--s1);border:1px solid var(--line);border-radius:10px;color:var(--fg);padding:11px 12px;font:400 14px Inter;outline:none}
 input:focus,textarea:focus{border-color:var(--mute2)}
+input:disabled{opacity:.45}
 label{display:block;font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--mute);margin:14px 0 6px}
 .row{display:flex;gap:10px}.row>*{flex:1}
 .hero{width:100%;height:210px;object-fit:cover;border-radius:16px;background:var(--s1);margin-top:16px}
@@ -879,6 +892,16 @@ function TrackerPage({trk, sticks, flash, onAdd, onDelEntry, onCancelPack, onShe
 function SettingsPage({app, onApp, trkCfg, onTrkCfg, onTest, flash, onFlash, onBack}) {
   const t = useT();
   const [busy, setBusy] = useState("");
+  const [showKey, setShowKey] = useState(false);
+  const [keyCheck, setKeyCheck] = useState({state:""});
+  useEffect(()=>{
+    if (!app.ai || !app.geminiKey) { setKeyCheck({state:""}); return; }
+    setKeyCheck({state:"checking"});
+    const ac = new AbortController();
+    // ждём, пока допечатают / вставят ключ целиком
+    const tm = setTimeout(()=>checkGeminiKey(app.geminiKey, ac.signal).then(setKeyCheck, ()=>{}), 600);
+    return ()=>{ clearTimeout(tm); ac.abort(); };
+  },[app.ai, app.geminiKey]);
   const chips = (opts, val, onPick) => (
     <div className="chips">
       {opts.map(([k,label])=>(
@@ -941,6 +964,33 @@ function SettingsPage({app, onApp, trkCfg, onTrkCfg, onTest, flash, onFlash, onB
         )}
       </div>
 
+      <div className="sec">{t("ai")}</div>
+      <div className="panel" style={{marginTop:0}}>
+        <div style={{display:"flex",alignItems:"center",gap:12}}>
+          <div style={{flex:1}}>
+            <div style={{fontWeight:600,fontSize:14}}>{t("aiTitle")}</div>
+            <div className="hint">{t("aiHint")}</div>
+          </div>
+          <button className={"switch"+(app.ai?" on":"")} onClick={()=>onApp({ai:!app.ai})}/>
+        </div>
+        {app.ai&&(
+          <>
+            <label>{t("aiKey")}</label>
+            <div className="row" style={{marginTop:0}}>
+              <input type={showKey?"text":"password"} value={app.geminiKey} autoComplete="off" spellCheck={false}
+                placeholder="AIza…" onChange={e=>onApp({geminiKey:e.target.value.trim()})}/>
+              <button className="btn ghost" style={{flex:"none"}} onClick={()=>setShowKey(v=>!v)}>{showKey?"🙈":"👁"}</button>
+            </div>
+            {!app.geminiKey&&<div className="err">{t("aiKeyEmpty")}</div>}
+            {keyCheck.state==="checking"&&<div className="hint" style={{marginTop:10}}><span className="spin"/>{t("aiKeyChecking")}</div>}
+            {keyCheck.state==="ok"&&<div className="hint" style={{marginTop:10,color:"var(--fg)"}}>{t("aiKeyOk")}</div>}
+            {keyCheck.state==="bad"&&<div className="err">{t("aiKeyBad")+keyCheck.msg}</div>}
+            {keyCheck.state==="net"&&<div className="err">{t("aiKeyNet")}</div>}
+            <div className="hint" style={{marginTop:10}}>{t("aiKeyHint")}</div>
+          </>
+        )}
+      </div>
+
       <div className="sec">{t("backup")}</div>
       <div className="hint" style={{marginBottom:12}}>{t("backupHint")}</div>
       <div className="row">
@@ -951,62 +1001,6 @@ function SettingsPage({app, onApp, trkCfg, onTrkCfg, onTest, flash, onFlash, onB
         {busy==="restore"&&<span className="spin"/>}{t("restore")}
         <input type="file" disabled={!!busy} onChange={restore} style={{display:"none"}}/>
       </label>
-    </div>
-  );
-}
-
-/* ── stats ── */
-function StatsPage({type, items, onBack}) {
-  const cfg = useTypeCfg(type), cur = useCur(), t = useT();
-  const rated = items.filter(l=>cfg.criteria.some(([k])=>l.ratings?.[k]>0));
-  const criteriaAvgs = cfg.criteria.map(([k,label])=>{
-    const vals = items.map(l=>l.ratings?.[k]||0).filter(v=>v>0);
-    return {k, label, avg: vals.length ? vals.reduce((a,b)=>a+b,0)/vals.length : 0};
-  });
-  const top5 = [...rated].sort((a,b)=>avgRating(b,cfg.criteria)-avgRating(a,cfg.criteria)).slice(0,5);
-  const allPrices = items.flatMap(l=>(l.prices||[]).map(p=>p.price)).filter(Boolean);
-  const ppms = items.map(pricePerUnit).filter(Boolean).map(Number);
-  const brands = new Set(items.map(l=>l.manufacturer).filter(Boolean));
-
-  return (
-    <div>
-      <button className="back" onClick={onBack}>{t("back")}</button>
-      <h1 className="disp" style={{fontSize:19,margin:"14px 0 18px"}}>{t("statsTitle", cfg.title)}</h1>
-      <div className="meta">
-        <div><small>{t("total")}</small>{items.length}</div>
-        <div><small>{t("brands")}</small>{brands.size}</div>
-        <div><small>{t("rated")}</small>{rated.length}</div>
-        <div><small>{t("favs")}</small>{items.filter(l=>l.favorite).length}</div>
-        {allPrices.length>0&&<><div><small>{t("minPrice")}</small>{Math.min(...allPrices)} {cur}</div><div><small>{t("maxPrice")}</small>{Math.max(...allPrices)} {cur}</div></>}
-        {allPrices.length>1&&<div><small>{t("avgPrice")}</small>{(allPrices.reduce((a,b)=>a+b,0)/allPrices.length).toFixed(0)} {cur}</div>}
-        {ppms.length>0&&<div><small>{t("bestPer", cur, cfg.unit)}</small>{Math.min(...ppms).toFixed(1)}</div>}
-      </div>
-      <div className="sec">{t("avgRatings")}</div>
-      {criteriaAvgs.map(({k,label,avg})=>(
-        <div key={k} style={{marginBottom:14}}>
-          <div style={{display:"flex",justifyContent:"space-between",fontSize:13,marginBottom:4}}>
-            <span>{label}</span><span style={{color:avg>0?"var(--fg)":"var(--mute2)"}}>{avg>0?avg.toFixed(1):"—"}</span>
-          </div>
-          <div className="sbar"><div className="sbar-fill" style={{width:`${(avg/5)*100}%`}}/></div>
-        </div>
-      ))}
-      {top5.length>0&&(
-        <>
-          <div className="sec">{t("top")}</div>
-          {top5.map((l,i)=>(
-            <div key={l.id} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 0",borderBottom:"1px solid var(--s2)"}}>
-              <span style={{color:"var(--mute2)",width:18,textAlign:"right",fontSize:13,flex:"none"}}>{i+1}</span>
-              {l.photo?<img src={l.photo} style={{width:38,height:38,borderRadius:8,objectFit:"cover",flex:"none"}} alt=""/>
-                :<div style={{width:38,height:38,borderRadius:8,background:"var(--fg)",color:"var(--bg)",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:700,fontSize:16,flex:"none"}}>{(l.name||"?")[0]}</div>}
-              <div style={{flex:1,minWidth:0}}>
-                <div style={{fontSize:14,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{l.name}</div>
-                <div style={{fontSize:11.5,color:"var(--mute)"}}>{l.manufacturer}</div>
-              </div>
-              <div style={{fontSize:16,fontWeight:700,flex:"none"}}>{avgRating(l,cfg.criteria).toFixed(1)}</div>
-            </div>
-          ))}
-        </>
-      )}
     </div>
   );
 }
@@ -1067,18 +1061,19 @@ function ComparePage({ids, type, items, onBack}) {
 
 /* ── form ── */
 function Form({initial, type, onSave, onCancel}) {
-  const cfg = useTypeCfg(type), t = useT(), lang = useContext(Ctx).lang;
+  const cfg = useTypeCfg(type), t = useT(), {lang, ai} = useContext(Ctx);
   const [f, setF] = useState(initial||{id:uid(),name:"",manufacturer:"",flavor:"",volume:"",nicotine:"",description:"",photo:"",ratings:{},prices:[],favorite:false,status:""});
   const [q, setQ] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [lb, setLb] = useState("");
   const set = (k,v) => setF(p=>({...p,[k]:v}));
+  const aiReady = ai.on && !!ai.key;
 
   const search = async () => {
     setBusy(true); setErr("");
     try {
-      const r = await aiSearch(q||`${f.manufacturer} ${f.name}`, type, lang);
+      const r = await aiSearch(q||`${f.manufacturer} ${f.name}`, type, lang, ai.key);
       setF(p=>({...p, manufacturer:r.manufacturer||p.manufacturer, name:r.name||p.name,
         flavor:r.flavor||p.flavor, volume:r.volume||p.volume,
         ...(cfg.showNicotine?{nicotine:r.nicotine||p.nicotine}:{})}));
@@ -1095,13 +1090,14 @@ function Form({initial, type, onSave, onCancel}) {
     <div>
       <button className="back" onClick={onCancel}>{t("back")}</button>
       <h1 className="disp" style={{fontSize:19,margin:"14px 0 4px"}}>{initial?t("edit"):cfg.newTitle}</h1>
-      <label>{t("webSearch")}</label>
+      <label style={aiReady?null:{opacity:.45}}>{t("webSearch")}</label>
       <div className="row">
-        <input placeholder={cfg.searchPlaceholder} value={q} onChange={e=>setQ(e.target.value)}/>
-        <button className="btn" style={{flex:"none"}} disabled={busy||!(q||f.name)} onClick={search}>
+        <input placeholder={cfg.searchPlaceholder} value={q} onChange={e=>setQ(e.target.value)} disabled={!aiReady}/>
+        <button className="btn" style={{flex:"none"}} disabled={!aiReady||busy||!(q||f.name)} onClick={search}>
           {busy&&<span className="spin"/>}{t("find")}
         </button>
       </div>
+      {!aiReady&&<div className="hint">{t(ai.on?"aiNoKey":"aiOff")}</div>}
       {err&&<div className="err">{err}</div>}
       <label>{t("manufacturer")}</label><input value={f.manufacturer} onChange={e=>set("manufacturer",e.target.value)}/>
       <label>{t("name")}</label><input value={f.name} onChange={e=>set("name",e.target.value)}/>
@@ -1273,7 +1269,8 @@ export default function App() {
   const {lang, theme} = app;
   const t = useMemo(()=>makeT(lang),[lang]);
   const cur = (CURRENCIES[app.currency] || CURRENCIES.RUB)[lang];
-  const ctx = useMemo(()=>({cur, lang, t}),[cur,lang,t]);
+  const ai = useMemo(()=>({on:app.ai, key:app.geminiKey}),[app.ai,app.geminiKey]);
+  const ctx = useMemo(()=>({cur, lang, t, ai}),[cur,lang,t,ai]);
   useEffect(()=>{
     document.documentElement.dataset.theme = theme;
     // Style.Light — тёмные значки для светлого фона
@@ -1459,10 +1456,7 @@ export default function App() {
               {cfg&&cmpMode
                 ?<button className="icon-btn" onClick={()=>{setCmpMode(false);setCmpIds([])}}>{t("cancel")}</button>
                 :<>
-                  {cfg&&<>
-                    <button className="icon-btn" onClick={()=>setView({page:"stats"})}>📊</button>
-                    <button className="icon-btn" onClick={()=>{setCmpMode(true);setCmpIds([])}}>⇄</button>
-                  </>}
+                  {cfg&&<button className="icon-btn" onClick={()=>{setCmpMode(true);setCmpIds([])}}>⇄</button>}
                   <button className="icon-btn" onClick={()=>setView({page:"settings"})}>⚙</button>
                 </>
               }
@@ -1548,7 +1542,6 @@ export default function App() {
         <SettingsPage app={app} onApp={patch=>setApp(p=>({...p, ...patch}))} trkCfg={trk.cfg} onTrkCfg={setTrkCfg}
           onTest={testNotif} flash={flash} onFlash={setFlash} onBack={()=>setView({page:"list"})}/>
       )}
-      {view.page==="stats"&&<StatsPage type={tab} items={items} onBack={()=>setView({page:"list"})}/>}
       {view.page==="compare"&&<ComparePage ids={view.compareIds||cmpIds} type={tab} items={items} onBack={()=>setView({page:"list"})}/>}
       {view.page==="form"&&(
         <Form initial={view.id?current:null} type={tab}

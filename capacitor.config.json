@@ -1,0 +1,11 @@
+{
+  "appId": "com.vape.tracker",
+  "appName": "Жижи",
+  "webDir": "dist",
+  "plugins": {
+    "LocalNotifications": {
+      "smallIcon": "ic_stat_stick",
+      "iconColor": "#f2f2f2"
+    }
+  }
+}

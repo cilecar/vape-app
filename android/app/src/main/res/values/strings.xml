@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Жижи</string>
+    <string name="title_activity_main">Жижи</string>
+    <string name="package_name">com.vape.tracker</string>
+    <string name="custom_url_scheme">com.vape.tracker</string>
+</resources>

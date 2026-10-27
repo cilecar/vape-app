@@ -23,17 +23,26 @@ const getIds = idsKey => readJSON(idsKey, []);
 async function setIds(idsKey, ids) {
   await Preferences.set({ key: idsKey, value: JSON.stringify(ids) });
 }
+// список id меняем строго по очереди: иначе параллельные save/remove читают один и тот же
+// список, и последний затирает изменение другого
+let idsQueue = Promise.resolve();
+const updateIds = (idsKey, fn) => {
+  const job = idsQueue.then(async () => {
+    const ids = await getIds(idsKey), next = fn(ids);
+    if (next!==ids) await setIds(idsKey, next);
+  });
+  idsQueue = job.catch(()=>{});
+  return job;
+};
 const save = async (l, type) => {
   const { key, idsKey } = TYPES[type];
   await Preferences.set({ key: key + l.id, value: JSON.stringify(l) });
-  const ids = await getIds(idsKey);
-  if (!ids.includes(l.id)) await setIds(idsKey, [...ids, l.id]);
+  await updateIds(idsKey, ids => ids.includes(l.id) ? ids : [...ids, l.id]);
 };
 const remove = async (id, type) => {
   const { key, idsKey } = TYPES[type];
   await Preferences.remove({ key: key + id });
-  const ids = await getIds(idsKey);
-  await setIds(idsKey, ids.filter(x => x !== id));
+  await updateIds(idsKey, ids => ids.filter(x => x !== id));
 };
 async function loadAll(type) {
   const { key, idsKey } = TYPES[type];
@@ -107,14 +116,14 @@ const L = {
     restoreAsk: d => `Все текущие данные заменятся данными из бэкапа${d?" от "+d:""}. Продолжить?`,
     restoreBad: "Это не файл бэкапа этого приложения", restoreFail: "Не удалось восстановить: ",
     ai: "ИИ-распознавание", aiTitle: "Заполнять карточку через Gemini", aiHint: "По названию находит бренд, вкус, объём и крепость",
-    aiKey: "Ключ Gemini API", aiKeyHint: "Получить бесплатно: aistudio.google.com/apikey. Ключ хранится на телефоне и попадает в бэкап",
+    aiKey: "Ключ Gemini API", aiKeyHint: "Получить бесплатно: aistudio.google.com/apikey. Ключ хранится на телефоне. В сохранённый бэкап он попадает, в отправленный файл — нет",
     aiKeyEmpty: "Ключ не указан — поиск в интернете при добавлении отключён",
     aiKeyChecking: "Проверяю ключ…", aiKeyOk: "✓ Ключ работает", aiKeyBad: "Ключ не подходит: ", aiKeyNet: "Не удалось проверить — нет связи с Google",
     aiOff: "ИИ-поиск выключен в настройках", aiNoKey: "Нет ключа Gemini — добавь его в настройках",
     // сравнение
     need2: "Нужно 2 позиции", compare: "Сравнение", byCrit: "По критериям", price: "Цена",
     // форма / карточка
-    webSearch: "Поиск в интернете", find: "Найти", errPrefix: "Ошибка: ", photoErr: "Не удалось обработать фото.",
+    webSearch: "Поиск в интернете", find: "Найти", errPrefix: "Ошибка: ", aiTimeout: "Gemini не ответил за 30 секунд", storeFail: "Не сохранилось в памяти телефона: ", photoErr: "Не удалось обработать фото.",
     manufacturer: "Производитель", name: "Название", flavorDesc: "Описание вкуса", strength: "Крепость",
     status: "Статус", notes: "Заметки", ownPhoto: "Своё фото", camera: "📷 Камера", gallery: "🖼 Галерея",
     favOn: "★ Избранное", favOff: "☆ В избранное", avgShort: "ср. оценка", avgLong: "средняя оценка", taste: "Вкус",
@@ -122,6 +131,7 @@ const L = {
     rating: "Оценка", date: "Дата", cmpWith: "⇄ Сравнить с…", share: "↑ Поделиться",
     // сообщения
     notifDenied: "Уведомления запрещены — разреши их для приложения в настройках Android",
+    notifLost: "Напоминание выключено: у приложения нет разрешения на уведомления. Включи напоминание снова",
     notifWebOnly: "Уведомления работают только в приложении на телефоне",
     notifSent: "Отправил — проверь шторку", failed: "Не получилось: ",
     tooMany: n => `По записям в пачке ${n} — больше быть не может. Если открыл новую, нажми «Новая пачка».`,
@@ -195,18 +205,19 @@ const L = {
     restoreAsk: d => `All current data will be replaced with the backup${d?" from "+d:""}. Continue?`,
     restoreBad: "This isn't a backup file of this app", restoreFail: "Couldn't restore: ",
     ai: "AI recognition", aiTitle: "Fill in cards with Gemini", aiHint: "Finds brand, flavor, volume and strength by name",
-    aiKey: "Gemini API key", aiKeyHint: "Get one for free: aistudio.google.com/apikey. The key is stored on the phone and included in backups",
+    aiKey: "Gemini API key", aiKeyHint: "Get one for free: aistudio.google.com/apikey. The key is stored on the phone. It's included in saved backups but not in shared files",
     aiKeyEmpty: "No key — web search when adding items is disabled",
     aiKeyChecking: "Checking the key…", aiKeyOk: "✓ The key works", aiKeyBad: "The key doesn't work: ", aiKeyNet: "Couldn't check — no connection to Google",
     aiOff: "AI search is turned off in settings", aiNoKey: "No Gemini key — add one in settings",
     need2: "Need 2 items", compare: "Compare", byCrit: "By criteria", price: "Price",
-    webSearch: "Search the web", find: "Find", errPrefix: "Error: ", photoErr: "Couldn't process the photo.",
+    webSearch: "Search the web", find: "Find", errPrefix: "Error: ", aiTimeout: "Gemini didn't answer in 30 seconds", storeFail: "Couldn't save to the phone: ", photoErr: "Couldn't process the photo.",
     manufacturer: "Manufacturer", name: "Name", flavorDesc: "Flavor", strength: "Strength",
     status: "Status", notes: "Notes", ownPhoto: "Photo", camera: "📷 Camera", gallery: "🖼 Gallery",
     favOn: "★ Favorite", favOff: "☆ Add to favorites", avgShort: "avg rating", avgLong: "average rating", taste: "Flavor",
     perUnit: u => `Price per ${u}`, smoked: "Smoked", smokedVal: (n, p) => `${n} pcs · ${p} packs`,
     rating: "Rating", date: "Date", cmpWith: "⇄ Compare with…", share: "↑ Share",
     notifDenied: "Notifications are blocked — allow them for the app in Android settings",
+    notifLost: "Reminder turned off: the app isn't allowed to send notifications. Turn the reminder on again",
     notifWebOnly: "Notifications work only in the phone app",
     notifSent: "Sent — check the notification shade", failed: "Didn't work: ",
     tooMany: n => `The pack has ${n} logged — it can't be more. If you opened a new one, tap “New pack”.`,
@@ -288,14 +299,17 @@ async function checkGeminiKey(key, signal) {
   const d = await resp.json().catch(()=>null);
   return { state:"bad", msg: d?.error?.message || `HTTP ${resp.status}` };
 }
+const AI_TIMEOUT = 30000;
 async function aiSearch(query, type, lang, key) {
   const resp = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
     { method:"POST", headers:{"Content-Type":"application/json", "x-goog-api-key":key},
-      body: JSON.stringify({ contents:[{role:"user",parts:[{text:typeCfg(type, lang).ai(query)}]}], generationConfig:{temperature:0.1} }) }
+      body: JSON.stringify({ contents:[{role:"user",parts:[{text:typeCfg(type, lang).ai(query)}]}], generationConfig:{temperature:0.1} }),
+      signal: AbortSignal.timeout(AI_TIMEOUT) }
   );
-  const d = await resp.json();
-  if (d.error) throw new Error(d.error.message);
+  // при сбое сервера в ответе бывает html, а не json
+  const d = await resp.json().catch(()=>null);
+  if (!resp.ok || d?.error) throw new Error(d?.error?.message || `HTTP ${resp.status}`);
   const text = (d.candidates?.[0]?.content?.parts||[]).map(p=>p.text||"").join("");
   const m = text.match(/\{[\s\S]*\}/);
   if (!m) throw new Error("no json");
@@ -330,15 +344,29 @@ const useCur = () => useContext(Ctx).cur;
 const useT = () => useContext(Ctx).t;
 const useTypeCfg = type => typeCfg(type, useContext(Ctx).lang);
 
+// пачки и журнал — одним ключом trk_data: открытие пачки меняет оба, и записи не должны разойтись.
+// trk_packs/trk_log — старый формат (и старые бэкапы): читаем их, пока trk_data нет
 async function loadTracker() {
   const get = async (k, d) => {
     try { return await readJSON("trk_"+k, d); }
     catch { unread.add("trk_"+k); return d; }
   };
-  const [packs, log, cfg] = await Promise.all(["packs","log","cfg"].map(k => get(k, TRK_DEFAULT[k])));
+  const [data, cfg] = await Promise.all([get("data", null), get("cfg", TRK_DEFAULT.cfg)]);
+  if (data) return { ...data, cfg: {...TRK_DEFAULT.cfg, ...cfg} };
+  const [packs, log] = await Promise.all([get("packs", TRK_DEFAULT.packs), get("log", TRK_DEFAULT.log)]);
+  // старое не прочиталось — нельзя записать вместо него пустое
+  if (unread.has("trk_packs")||unread.has("trk_log")) unread.add("trk_data");
   return { packs, log, cfg: {...TRK_DEFAULT.cfg, ...cfg} };
 }
-const saveTracker = (k, v) => { if (!unread.has("trk_"+k)) Preferences.set({ key: "trk_"+k, value: JSON.stringify(v) }); };
+let legacyTrk = true;
+const saveTracker = (k, v) => {
+  if (unread.has("trk_"+k)) return;
+  const w = Preferences.set({ key: "trk_"+k, value: JSON.stringify(v) });
+  if (k==="data" && legacyTrk) {
+    legacyTrk = false;
+    w.then(()=>Preferences.remove({ key: "trk_packs" })).then(()=>Preferences.remove({ key: "trk_log" })).catch(()=>{});
+  }
+};
 
 const packLeft = (p, log) => p ? p.size - log.reduce((s,e)=>e.pack===p.id?s+e.n:s, 0) : 0;
 const dayTotals = log => {
@@ -516,10 +544,12 @@ async function shareCard(l, cfg, cur, t) {
 
 /* ── backup ── */
 const BACKUP_APP = "vape-tracker";
-async function makeBackup() {
+// withKey=false — файл для отправки: ключ Gemini в мессенджеры и облака не уходит
+async function makeBackup(withKey = true) {
   const { keys } = await Preferences.keys();
-  const data = {};
-  for (const k of keys) data[k] = (await Preferences.get({ key: k })).value;
+  const vals = await Promise.all(keys.map(k => Preferences.get({ key: k })));
+  const data = Object.fromEntries(keys.map((k, i) => [k, vals[i].value]));
+  if (!withKey && data.app_cfg) try { const c = JSON.parse(data.app_cfg); delete c.geminiKey; data.app_cfg = JSON.stringify(c); } catch {}
   return JSON.stringify({ app: BACKUP_APP, v: 1, created: new Date().toISOString(), data });
 }
 const parseBackup = text => {
@@ -529,8 +559,14 @@ const parseBackup = text => {
 // сначала пишем всё из файла, потом убираем лишнее — если запись оборвётся, старое не потеряется
 async function restoreBackup(b) {
   const { keys } = await Preferences.keys();
-  for (const [k, v] of Object.entries(b.data)) if (typeof v==="string") await Preferences.set({ key: k, value: v });
-  for (const k of keys) if (!(k in b.data)) await Preferences.remove({ key: k });
+  const data = {...b.data};
+  // в отправленном файле ключа нет — оставляем тот, что уже на телефоне
+  try {
+    const c = JSON.parse(data.app_cfg), key = (await readJSON("app_cfg", {})).geminiKey;
+    if (c && !c.geminiKey && key) data.app_cfg = JSON.stringify({...c, geminiKey:key});
+  } catch {}
+  for (const [k, v] of Object.entries(data)) if (typeof v==="string") await Preferences.set({ key: k, value: v });
+  for (const k of keys) if (typeof data[k]!=="string") await Preferences.remove({ key: k });
 }
 const backupName = () => `vape-backup-${today()}-${new Date().toTimeString().slice(0,5).replace(":","")}.json`;
 // в «Документы»; имя с временем — файл от прошлой установки приложения перезаписать нельзя
@@ -543,6 +579,11 @@ async function saveBackupFile(json) {
 async function shareBackupFile(json) {
   const name = backupName();
   if (!NATIVE) return downloadText(json, name);
+  // прошлые отправленные копии убираем здесь, а не сразу после Share — их ещё может читать получатель
+  try {
+    const { files } = await Filesystem.readdir({ path: "", directory: Directory.Cache });
+    await Promise.all(files.filter(f => /^vape-backup-.*\.json$/.test(f.name)).map(f => Filesystem.deleteFile({ path: f.name, directory: Directory.Cache })));
+  } catch {}
   const { uri } = await Filesystem.writeFile({ path: name, data: json, directory: Directory.Cache, encoding: Encoding.UTF8 });
   await Share.share({ title: name, files: [uri] });
 }
@@ -992,7 +1033,7 @@ function SettingsPage({app, onApp, trkCfg, onTrkCfg, onTest, flash, onFlash, onB
   };
   const save = () => run("save", async ()=>onFlash({text:t("backupSaved", await saveBackupFile(await makeBackup()))}));
   const share = () => run("share", async ()=>{
-    try { await shareBackupFile(await makeBackup()); }
+    try { await shareBackupFile(await makeBackup(false)); }
     catch (e) { if (!/cancel/i.test(e?.message||"")) throw e; } // закрыли окно «поделиться» — не ошибка
   });
   const restore = e => {
@@ -1148,12 +1189,13 @@ function Form({initial, type, onSave, onCancel}) {
 
   const search = async () => {
     setBusy(true); setErr("");
+    const before = f;
     try {
       const r = await aiSearch(q||`${f.manufacturer} ${f.name}`, type, lang, ai.key);
-      setF(p=>({...p, manufacturer:r.manufacturer||p.manufacturer, name:r.name||p.name,
-        flavor:r.flavor||p.flavor, volume:r.volume||p.volume,
-        ...(cfg.showNicotine?{nicotine:r.nicotine||p.nicotine}:{})}));
-    } catch (e) { setErr(t("errPrefix") + (e?.message || String(e))); }
+      const keys = ["manufacturer","name","flavor","volume", ...(cfg.showNicotine?["nicotine"]:[])];
+      // поле, которое поправили, пока ждали ответа, не трогаем
+      setF(p=>({...p, ...Object.fromEntries(keys.map(k=>[k, p[k]!==before[k] ? p[k] : r[k]||p[k]]))}));
+    } catch (e) { setErr(t("errPrefix") + (e?.name==="TimeoutError" ? t("aiTimeout") : e?.message || String(e))); }
     setBusy(false);
   };
 
@@ -1338,11 +1380,18 @@ export default function App() {
     Promise.all([...types.map(loadAll), trkAndApp]).then(res=>{
       const [tr, ap] = res.at(-1);
       setAllItems(Object.fromEntries(types.map((t,i)=>[t,res[i]]))); setTrk(tr); setApp(ap); setLoading(false);
+      // напоминание включено, а разрешения нет — например, бэкап восстановили на другом телефоне.
+      // Только проверяем: запрос при холодном старте Android может отклонить, не показав диалог,
+      // а переключатель в настройках запросит его сам
+      if (tr.cfg.remind && NATIVE) LocalNotifications.checkPermissions().then(({display})=>{
+        if (display==="granted") return;
+        setTrk(p=>({...p, cfg:{...p.cfg, remind:false}}));
+        setFlash({err:true, text:makeT(ap.lang)("notifLost")});
+      }).catch(()=>{});
     });
   },[]);
 
-  useEffect(()=>{ if (!loading) saveTracker("packs",trk.packs); },[loading,trk.packs]);
-  useEffect(()=>{ if (!loading) saveTracker("log",trk.log); },[loading,trk.log]);
+  useEffect(()=>{ if (!loading) saveTracker("data",{packs:trk.packs, log:trk.log}); },[loading,trk.packs,trk.log]);
   useEffect(()=>{ if (!loading) saveTracker("cfg",trk.cfg); },[loading,trk.cfg]);
   useEffect(()=>{ if (!loading) saveSettings(app); },[loading,app]);
 
@@ -1390,12 +1439,13 @@ export default function App() {
   const setItems = fn => setAllItems(p=>({...p,[tab]:fn(p[tab])}));
   const cfg = TYPES[tab] && typeCfg(tab, lang);
 
+  const storeFail = e => alert(t("storeFail") + (e?.message||String(e)));
   const upsert = l => {
-    save(l,tab);
+    save(l,tab).catch(storeFail);
     setItems(p=>{const i=p.findIndex(x=>x.id===l.id); return i<0?[...p,l]:p.map(x=>x.id===l.id?l:x);});
   };
   const del = id => {
-    remove(id,tab); setView({page:"list"}, ()=>setItems(p=>p.filter(x=>x.id!==id)));
+    remove(id,tab).catch(storeFail); setView({page:"list"}, ()=>setItems(p=>p.filter(x=>x.id!==id)));
   };
   const switchTab = t => {
     const dir = tabIndex(t)>tabIndex(tab)?"r":tabIndex(t)<tabIndex(tab)?"l":"";

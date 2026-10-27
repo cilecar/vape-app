@@ -540,15 +540,22 @@ function downloadText(text, name) {
 // View Transitions: браузер снимает старый экран и анимирует его уход вместе с появлением нового.
 // nav — направление (fwd/back/fade/tab-r/tab-l/sheet), по нему css выбирает анимацию
 const VT = typeof document!=="undefined" && !!document.startViewTransition;
-let vtQueue = null;
+let vtQueue = null, vtRunning = false;
 function animate(nav, fn) {
+  // вложенный вызов внутри перехода — уже часть его, направление задал внешний
+  if (vtRunning) return fn();
+  // несколько переходов из одного обработчика — одной анимацией, направление у последнего;
+  // в очередь даже без анимации, иначе обгонит уже отложенные обновления
+  if (vtQueue) { document.documentElement.dataset.nav = nav; vtQueue.push(fn); return; }
   if (!VT || matchMedia("(prefers-reduced-motion: reduce)").matches) return fn();
   document.documentElement.dataset.nav = nav;
-  // несколько переходов из одного обработчика — одной анимацией, направление у последнего
-  if (vtQueue) { vtQueue.push(fn); return; }
   vtQueue = [fn];
-  const vt = document.startViewTransition(()=>{ const fns = vtQueue; vtQueue = null; flushSync(()=>fns.forEach(f=>f())); });
-  vt.finished.finally(()=>{ if (!vtQueue) delete document.documentElement.dataset.nav; });
+  const vt = document.startViewTransition(()=>{
+    const fns = vtQueue; vtQueue = null; vtRunning = true;
+    try { flushSync(()=>fns.forEach(f=>f())); } finally { vtRunning = false; }
+  });
+  const done = ()=>{ if (!vtQueue) delete document.documentElement.dataset.nav; };
+  vt.finished.then(done, done);
 }
 const DEPTH = { list:0, settings:1, compare:1, detail:1 };
 const depth = v => v.page==="form" ? (v.id?2:1) : DEPTH[v.page];
@@ -1295,8 +1302,10 @@ export default function App() {
   const [pendingAct, setPendingAct] = useState(null);
   const [slide, setSlide] = useState("");
   const [app, setApp] = useState(APP_DEFAULT);
-  const setView = v => animate(navDir(view, v), ()=>setViewNow(v));
-  const setSheet = s => animate("sheet", ()=>setSheetNow(s));
+  // also — остальные изменения того же действия: идут в тот же переход, чтобы старый экран
+  // сняли целиком до них, а не наполовину обновлённым
+  const setView = (v, also) => animate(navDir(view, v), ()=>{ also?.(); setViewNow(v); });
+  const setSheet = (s, also) => animate("sheet", ()=>{ also?.(); setSheetNow(s); });
 
   useEffect(()=>{
     const types = Object.keys(TYPES);
@@ -1361,16 +1370,19 @@ export default function App() {
     setItems(p=>{const i=p.findIndex(x=>x.id===l.id); return i<0?[...p,l]:p.map(x=>x.id===l.id?l:x);});
   };
   const del = id => {
-    remove(id,tab); setItems(p=>p.filter(x=>x.id!==id)); setView({page:"list"});
+    remove(id,tab); setView({page:"list"}, ()=>setItems(p=>p.filter(x=>x.id!==id)));
   };
   const switchTab = t => {
     const dir = tabIndex(t)>tabIndex(tab)?"r":tabIndex(t)<tabIndex(tab)?"l":"";
-    animate(view.page!=="list"?"back":dir?"tab-"+dir:"fade", ()=>{
+    const go = ()=>{
       // без View Transitions — старая анимация въезда вкладки
       setSlide(!VT&&dir?"in-"+dir:"");
       setTab(t); setViewNow({page:"list"}); setSearch(""); setFilterFav(false);
       setFilterStatus(""); setCmpMode(false); setCmpIds([]);
-    });
+    };
+    // повторный тап по открытой вкладке — просто сброс, без анимации
+    const nav = view.page!=="list" ? "back" : dir&&"tab-"+dir;
+    if (nav) animate(nav, go); else go();
   };
 
   backRef.current = () => {
@@ -1417,7 +1429,7 @@ export default function App() {
   const toggleCmp = id => {
     setCmpIds(prev=>prev.includes(id)?prev.filter(x=>x!==id):prev.length<2?[...prev,id]:prev);
   };
-  const startCompare = id => { setCmpIds([id]); setCmpMode(true); setView({page:"list"}); };
+  const startCompare = id => setView({page:"list"}, ()=>{ setCmpIds([id]); setCmpMode(true); });
 
   /* tracker actions */
   const todayCount = log => dayTotals(log)[dayKey(Date.now())]||0;
@@ -1428,8 +1440,7 @@ export default function App() {
   };
   // notifId — если ответили из шторки: Android 15+ не даёт такое уведомление удалить,
   // поэтому заменяем его итогом с тем же id (иначе оно так и висит с крутилкой)
-  const applyLeft = (n, notifId) => {
-    setSheet(null);
+  const applyLeft = (n, notifId) => setSheet(null, ()=>{
     if (!curPack) return;
     if (n>curLeft) {
       const text = t("tooMany", curLeft);
@@ -1441,16 +1452,15 @@ export default function App() {
     const body = t("leftBody", c, n);
     setFlash({text:`${title} · ${body}`});
     notifyResult(notifId, title, body[0].toUpperCase()+body.slice(1));
-  };
-  const openPack = ({stickId, size, price, finishOld}) => {
-    setSheet(null);
+  });
+  const openPack = ({stickId, size, price, finishOld}) => setSheet(null, ()=>{
     const id = uid(), now = Date.now();
     setTrk(p=>{
       const old = p.packs.at(-1), l = packLeft(old, p.log);
       const log = finishOld&&l>0 ? [...p.log, {id:uid(), t:now, n:l, pack:old.id, kind:"finish", by:id}] : p.log;
       return {...p, log, packs:[...p.packs, {id, stickId, size, price, opened:now}]};
     });
-  };
+  });
   const cancelPack = id => setTrk(p=>({...p, packs:p.packs.filter(x=>x.id!==id), log:p.log.filter(e=>e.by!==id)}));
   const setTrkCfg = async patch => {
     if (patch.remind&&NATIVE) {
@@ -1572,7 +1582,7 @@ export default function App() {
           </div>
           {cfg&&(cmpMode
             ?<button className="fab" disabled={cmpIds.length<2}
-                onClick={()=>{if(cmpIds.length===2)animate("fwd",()=>{setCmpMode(false);setCmpIds([]);setViewNow({page:"compare",compareIds:cmpIds})})}}>
+                onClick={()=>{if(cmpIds.length===2)setView({page:"compare",compareIds:cmpIds},()=>{setCmpMode(false);setCmpIds([])})}}>
                 {cmpIds.length===2?t("cmpGo"):t("cmpSel", cmpIds.length)}
               </button>
             :<button className="fab" onClick={()=>setView({page:"form"})}>{cfg.addBtn}</button>
@@ -1595,7 +1605,7 @@ export default function App() {
       {view.page==="compare"&&<ComparePage ids={view.compareIds} type={tab} items={items} onBack={()=>setView({page:"list"})}/>}
       {view.page==="form"&&(
         <Form initial={view.id?current:null} type={tab}
-          onSave={l=>{upsert(l);setView({page:"detail",id:l.id})}}
+          onSave={l=>setView({page:"detail",id:l.id},()=>upsert(l))}
           onCancel={()=>setView(view.id?{page:"detail",id:view.id}:{page:"list"})}/>
       )}
       {view.page==="detail"&&current&&(

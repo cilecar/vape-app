@@ -1522,7 +1522,7 @@ export default function App() {
           </div>
           {cfg&&(cmpMode
             ?<button className="fab" disabled={cmpIds.length<2}
-                onClick={()=>{if(cmpIds.length===2){setCmpMode(false);setView({page:"compare",compareIds:cmpIds})}}}>
+                onClick={()=>{if(cmpIds.length===2){setCmpMode(false);setCmpIds([]);setView({page:"compare",compareIds:cmpIds})}}}>
                 {cmpIds.length===2?t("cmpGo"):t("cmpSel", cmpIds.length)}
               </button>
             :<button className="fab" onClick={()=>setView({page:"form"})}>{cfg.addBtn}</button>
@@ -1542,7 +1542,7 @@ export default function App() {
         <SettingsPage app={app} onApp={patch=>setApp(p=>({...p, ...patch}))} trkCfg={trk.cfg} onTrkCfg={setTrkCfg}
           onTest={testNotif} flash={flash} onFlash={setFlash} onBack={()=>setView({page:"list"})}/>
       )}
-      {view.page==="compare"&&<ComparePage ids={view.compareIds||cmpIds} type={tab} items={items} onBack={()=>setView({page:"list"})}/>}
+      {view.page==="compare"&&<ComparePage ids={view.compareIds}type={tab} items={items} onBack={()=>setView({page:"list"})}/>}
       {view.page==="form"&&(
         <Form initial={view.id?current:null} type={tab}
           onSave={l=>{upsert(l);setView({page:"detail",id:l.id})}}

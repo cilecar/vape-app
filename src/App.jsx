@@ -323,6 +323,11 @@ const localDate = (d = new Date()) => new Date(d - d.getTimezoneOffset()*60000).
 const today = () => localDate();
 const fmtDate = d => d.split("-").reverse().join(".");
 const lastPrice = l => l.prices?.length ? [...l.prices].sort((a,b)=>a.date.localeCompare(b.date)).at(-1) : null;
+// цена на дату: последняя запись не позже неё, а если все записи позже — самая ранняя
+const priceAt = (l, date) => {
+  const ps = [...(l?.prices||[])].sort((a,b)=>a.date.localeCompare(b.date));
+  return (ps.findLast(p=>p.date<=date) || ps[0])?.price;
+};
 const avgRating = (l, criteria) => {
   const vals = criteria.map(([k]) => l.ratings?.[k] || 0).filter(v => v > 0);
   return vals.length ? vals.reduce((a,b)=>a+b,0)/vals.length : 0;
@@ -955,7 +960,7 @@ function LeftSheet({pack, left, name, onPick, onClose}) {
 }
 
 const stickSize = s => String(parseInt(s?.volume)||20);
-const stickPrice = s => String(s && lastPrice(s)?.price || "");
+const stickPrice = s => String(priceAt(s, today()) || "");
 
 function PackSheet({sticks, cur, curLeft, onOpen, onClose, onAddSticks}) {
   const money = useCur(), t = useT(), lang = useContext(Ctx).lang;
@@ -1026,8 +1031,9 @@ function TrackerPage({trk, sticks, flash, onAdd, onDelEntry, onCancelPack, onShe
     return c ? s/c : null;
   };
   const avg7 = avgOver(7), avg30 = avgOver(30);
-  // цену пачки при открытии могли не указать — тогда берём последнюю цену стика из каталога
-  const packPrice = p => p && (p.price || lastPrice(sticks.find(s=>s.id===p.stickId)||{})?.price);
+  // цена пачки — из истории цен стика на день открытия, так правка цены в каталоге сразу
+  // пересчитывает траты; цена в самой пачке — запасная, если стик удалили или цен у него нет
+  const packPrice = p => p && (priceAt(sticks.find(s=>s.id===p.stickId), localDate(new Date(p.opened))) || p.price);
   const cost = e => { const p = packById[e.pack], pr = packPrice(p); return pr ? e.n*pr/p.size : 0; };
   const costFrom = from => log.reduce((s,e)=>dayKey(e.t)>=from?s+cost(e):s, 0);
   const costToday = costFrom(tk), cost30 = costFrom(shiftDay(tk,-29));
@@ -1595,10 +1601,11 @@ export default function App() {
   const setItems = fn => setAllItems(p=>({...p,[tab]:fn(p[tab])}));
   const cfg = TYPES[tab] && typeCfg(tab, lang);
 
-  const upsert = l => {
+  const upsert = (l, type=tab) => {
+    const setOf = fn => setAllItems(p=>({...p,[type]:fn(p[type])}));
     // новое фото записано файлом — в состоянии заменяем data:-url путём, если карточку не успели поменять
-    save(l,tab).then(s=>{ if (s.photo!==l.photo) setItems(p=>p.map(x=>x.id===s.id&&x.photo===l.photo?{...x, photo:s.photo}:x)); }).catch(storeFail);
-    setItems(p=>{const i=p.findIndex(x=>x.id===l.id); return i<0?[...p,l]:p.map(x=>x.id===l.id?l:x);});
+    save(l,type).then(s=>{ if (s.photo!==l.photo) setOf(p=>p.map(x=>x.id===s.id&&x.photo===l.photo?{...x, photo:s.photo}:x)); }).catch(storeFail);
+    setOf(p=>{const i=p.findIndex(x=>x.id===l.id); return i<0?[...p,l]:p.map(x=>x.id===l.id?l:x);});
   };
   const del = id => {
     remove(id,tab).catch(storeFail); setView({page:"list"}, ()=>setItems(p=>p.filter(x=>x.id!==id)));
@@ -1687,6 +1694,10 @@ export default function App() {
   });
   const openPack = ({stickId, size, price, finishOld}) => setSheet(null, ()=>{
     const id = uid(), now = Date.now();
+    // траты считаются по истории цен в каталоге — новую цену записываем туда, на сегодня
+    const s = sticks.find(x=>x.id===stickId), d = today();
+    if (s && price>0 && price!==priceAt(s, d))
+      upsert({...s, prices:[...(s.prices||[]).filter(x=>x.date!==d), {date:d, price}]}, "sticks");
     setTrk(p=>{
       const old = p.packs.at(-1), l = packLeft(old, p.log);
       const log = finishOld&&l>0 ? [...p.log, {id:uid(), t:now, n:l, pack:old.id, kind:"finish", by:id}] : p.log;

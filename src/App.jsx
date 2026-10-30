@@ -153,6 +153,7 @@ const L = {
     remindAskHint: t => `Каждый день в ${t} придёт уведомление — вводишь, сколько осталось в пачке, прямо из шторки.`,
     enable: "Включить", noThanks: "Не надо",
     secToday: "Сегодня", nothingYet: "Пока ничего не отмечено", days14: "14 дней",
+    nothingDay: "В этот день ничего не отмечено", vsAvg: d => `${d} к среднему`,
     "kind.left": "по остатку", "kind.finish": "докурил пачку",
     avg7: "Ср. за 7 дн", avg30: "Ср. за 30 дн", maxDay: "Макс за день", total: "Всего", packs: "Пачек", spent30: "Потрачено 30 дн",
     howMany: "Сколько осталось?", byRecords: (name, left, size) => `${name} · по записям ${left} из ${size}`,
@@ -245,6 +246,7 @@ const L = {
     remindAskHint: t => `Every day at ${t} you'll get a notification — enter what's left in the pack right from the shade.`,
     enable: "Turn on", noThanks: "No thanks",
     secToday: "Today", nothingYet: "Nothing logged yet", days14: "14 days",
+    nothingDay: "Nothing logged that day", vsAvg: d => `${d} vs average`,
     "kind.left": "by count", "kind.finish": "finished pack",
     avg7: "7-day avg", avg30: "30-day avg", maxDay: "Max per day", total: "Total", packs: "Packs", spent30: "Spent 30 days",
     howMany: "How many left?", byRecords: (name, left, size) => `${name} · logged ${left} of ${size}`,
@@ -409,7 +411,9 @@ const aiField = (k, v) => {
 /* ── tracker ── */
 const DAY_START = 4; // до 4 утра считается ещё вчерашним днём
 const dayKey = t => localDate(new Date(t - DAY_START*3600e3));
-const shiftDay = (k, n) => { const d = new Date(k+"T12:00:00"); d.setDate(d.getDate()+n); return localDate(d); };
+// ключ дня — в полдень: переход на летнее время не сдвинет дату
+const parseDay = k => new Date(k+"T12:00:00");
+const shiftDay = (k, n) => { const d = parseDay(k); d.setDate(d.getDate()+n); return localDate(d); };
 const fmtTime = t => new Date(t).toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit"});
 // cur — пачка, которую курят сейчас; открытыми могут быть несколько, у каждой свой остаток
 const TRK_DEFAULT = { packs:[], log:[], cur:null, cfg:{remind:null, time:"22:00"} };
@@ -963,7 +967,8 @@ function Sheet({onClose, children}) {
   return <div className="sheet-bg" onClick={onClose}><div className="sheet" onClick={e=>e.stopPropagation()}>{children}</div></div>;
 }
 
-function DayBars({data}) {
+// выделен показанный день (sel); нажимается вся колонка — низкий столбец иначе не попасть
+function DayBars({data, onPick}) {
   const W=340,H=140,P=10,bw=(W-2*P)/data.length,mx=Math.max(...data.map(d=>d.v),1);
   return (
     <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%"}}>
@@ -971,9 +976,10 @@ function DayBars({data}) {
         const h=d.v?(H-46)*d.v/mx:2, x=P+i*bw+3, w=bw-6, y=H-22-h;
         return (
           <g key={d.k}>
-            <rect x={x} y={y} width={w} height={h} rx="3" fill={d.today?"var(--fg)":d.v?"var(--line2)":"var(--line)"}/>
-            {d.v>0&&<text x={x+w/2} y={y-5} fill={d.today?"var(--fg)":"var(--mute)"} fontSize="10" textAnchor="middle">{d.v}</text>}
-            <text x={x+w/2} y={H-7} fill={d.today?"var(--fg)":"var(--mute2)"} fontSize="9" textAnchor="middle">{d.label}</text>
+            <rect x={x} y={y} width={w} height={h} rx="3" fill={d.sel?"var(--fg)":d.v?"var(--line2)":"var(--line)"}/>
+            {d.v>0&&<text x={x+w/2} y={y-5} fill={d.sel?"var(--fg)":"var(--mute)"} fontSize="10" textAnchor="middle">{d.v}</text>}
+            <text x={x+w/2} y={H-7} fill={d.sel?"var(--fg)":"var(--mute2)"} fontSize="9" textAnchor="middle">{d.label}</text>
+            {onPick&&<rect x={P+i*bw} y={0} width={bw} height={H} fill="transparent" style={{cursor:"pointer"}} role="button" aria-label={d.title} aria-pressed={d.sel} onClick={()=>onPick(d.k)}/>}
           </g>
         );
       })}
@@ -1087,9 +1093,10 @@ function TrackerPage({trk, cur, open, sticks, flash, onAdd, onSwitch, onFinish, 
   const tk = dayKey(Date.now());
   const todayN = totals[tk]||0, yestN = totals[shiftDay(tk,-1)]||0;
   const firstDay = log.length ? dayKey(log.reduce((m,e)=>Math.min(m,e.t), Infinity)) : tk;
-  const avgOver = n => {
+  // среднее за n дней до дня from (сам он не входит)
+  const avgOver = (n, from=tk) => {
     let s=0, c=0;
-    for (let i=1; i<=n; i++) { const k=shiftDay(tk,-i); if (k<firstDay) break; s+=totals[k]||0; c++; }
+    for (let i=1; i<=n; i++) { const k=shiftDay(from,-i); if (k<firstDay) break; s+=totals[k]||0; c++; }
     return c ? s/c : null;
   };
   const avg7 = avgOver(7), avg30 = avgOver(30);
@@ -1100,10 +1107,21 @@ function TrackerPage({trk, cur, open, sticks, flash, onAdd, onSwitch, onFinish, 
   const costFrom = from => log.reduce((s,e)=>dayKey(e.t)>=from?s+cost(e):s, 0);
   const costToday = costFrom(tk), cost30 = costFrom(shiftDay(tk,-29));
   const nameOf = e => sticks.find(s=>s.id===packById[e.pack]?.stickId)?.name || "";
-  const todayLog = log.filter(e=>dayKey(e.t)===tk).reverse();
+  // день, показанный вместо «Сегодня»: выбирают столбцом графика, повторное нажатие — обратно сегодня.
+  // Журнал изменился (+1, остаток, пустой журнал без графика) — снова сегодня, чтобы новая запись
+  // была видна. Сегодня — это null, а не дата: после полуночи «сегодня» сдвинется само
+  const [day, setDay] = useState(null);
+  const sel = day && day.n===log.length ? day.k : tk, isToday = sel===tk;
+  const pickDay = k => setDay(k===sel||k===tk ? null : {k, n:log.length});
+  const weekday = k => t("weekdays")[parseDay(k).getDay()];
+  const dayLog = log.filter(e=>dayKey(e.t)===sel).sort((a,b)=>b.t-a.t);
+  const dayN = totals[sel]||0, dayCost = dayLog.reduce((s,e)=>s+cost(e), 0);
+  // со средним за 7 дней перед выбранным; сегодня ещё не кончилось — сравнивать рано
+  const avgBefore = isToday ? null : avgOver(7, sel);
+  const vsAvg = avgBefore!=null && dayN>0 ? +(dayN-avgBefore).toFixed(1) : null;
   const bars = Array.from({length:14},(_,i)=>{
     const k = shiftDay(tk,i-13);
-    return {k, v:totals[k]||0, today:k===tk, label:k===tk?t("todayShort"):t("weekdays")[new Date(k+"T12:00:00").getDay()]};
+    return {k, v:totals[k]||0, sel:k===sel, label:k===tk?t("todayShort"):weekday(k), title:`${weekday(k)}, ${fmtDate(k).slice(0,5)}: ${totals[k]||0}`};
   });
   const daysLeft = avg7 && left>0 ? left/avg7 : null;
   const forecast = daysLeft==null ? "" : daysLeft<1 ? t("endsToday") : t("lastsDays", daysLeft.toFixed(daysLeft<3?1:0));
@@ -1184,24 +1202,31 @@ function TrackerPage({trk, cur, open, sticks, flash, onAdd, onSwitch, onFinish, 
         </div>
       )}
 
-      <div className="sec">{t("secToday")}</div>
-      {todayLog.length===0
-        ? <div className="hint">{t("nothingYet")}</div>
-        : todayLog.map(e=>(
+      <div className="sec">{isToday ? t("secToday") : `${weekday(sel)}, ${fmtDate(sel).slice(0,5)}`}</div>
+      {dayLog.length>0&&(
+        <div className="hint" style={{marginBottom:4}}>
+          {`${dayN} ${t("sticksWord", dayN)}`}
+          {dayCost>0&&` · ≈ ${Math.round(dayCost)} ${money}`}
+          {vsAvg!=null&&` · ${t("vsAvg", (vsAvg>0?"+":vsAvg<0?"−":"±")+Math.abs(vsAvg))}`}
+        </div>
+      )}
+      {dayLog.length===0
+        ? <div className="hint">{t(isToday?"nothingYet":"nothingDay")}</div>
+        : dayLog.map(e=>(
           <div className="logrow" key={e.id}>
             <span style={{color:"var(--mute)",width:42,flex:"none"}}>{fmtTime(e.t)}</span>
             <span style={{fontWeight:600,width:32,flex:"none"}}>+{e.n}</span>
             <span style={{flex:1,minWidth:0,color:"var(--mute)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
               {[e.kind&&t("kind."+e.kind), nameOf(e)].filter(Boolean).join(" · ")}
             </span>
-            <button className="btn ghost" style={{padding:"4px 10px",fontSize:11,flex:"none"}} onClick={()=>onDelEntry(e.id)}>✕</button>
+            {isToday&&<button className="btn ghost" style={{padding:"4px 10px",fontSize:11,flex:"none"}} onClick={()=>onDelEntry(e.id)}>✕</button>}
           </div>
         ))}
 
       {log.length>0&&(
         <>
           <div className="sec">{t("days14")}</div>
-          <DayBars data={bars}/>
+          <DayBars data={bars} onPick={pickDay}/>
           <div className="meta">
             <div><small>{t("avg7")}</small>{avg7!=null?avg7.toFixed(1):"—"}</div>
             <div><small>{t("avg30")}</small>{avg30!=null?avg30.toFixed(1):"—"}</div>

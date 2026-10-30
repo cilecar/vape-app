@@ -160,7 +160,9 @@ const L = {
     addSticksFirst: "Сначала добавь стики во вкладке «Стики» — потом выбирай их здесь.",
     whichSticks: "Какие стики открыл?", lastPack: "прошлая пачка", pcs: "Штук",
     packPrice: c => `Цена пачки, ${c}`, optional: "необязательно",
-    finishOld: n => `Старую докурил — записать оставшиеся ${n} шт`,
+    finishOld: (name, n) => `${name} докурил — записать оставшиеся ${n} шт`,
+    openPacks: "Открытые пачки", leftOf: (n, size) => `осталось ${n} из ${size}`,
+    finishPack: "Закончить пачку", finishAsk: n => `Записать оставшиеся ${n} шт как выкуренные и закрыть пачку?`,
     // настройки
     look: "Оформление", theme: "Тема", dark: "Тёмная", light: "Светлая", lang: "Язык",
     currency: "Валюта", currencyHint: "Меняется только значок — введённые цены не пересчитываются по курсу",
@@ -194,7 +196,7 @@ const L = {
     mismatch: "Не сходится", recorded: d => `Записал +${d}`, matches: "Сходится с записями",
     leftBody: (c, n) => `сегодня ${c} ${L.ru.sticksWord(c)} · в пачке осталось ${n}${n===0?" — пачка кончилась":""}`,
     badAnswer: "Не понял ответ", badAnswerBody: i => `«${i}» — нужно число. Введи остаток в приложении.`,
-    staleAnswer: "Ответ не записан", staleAnswerBody: "Напоминание было про другую пачку. Введи остаток в приложении.",
+    staleAnswer: "Ответ не записан", staleAnswerBody: "Пачку из напоминания уже докурили или отменили. Введи остаток в приложении.",
     sticksDefault: "Стики",
     notifPackTitle: "Сколько стиков осталось в пачке?", notifNoPackTitle: "Сколько выкурил сегодня?",
     notifPackBody: (name, left, size) => `${name} — по записям ${left} из ${size}`, notifNoPackBody: "Открой счётчик и отметь пачку",
@@ -250,7 +252,9 @@ const L = {
     addSticksFirst: "Add sticks in the “Sticks” tab first — then pick them here.",
     whichSticks: "Which sticks did you open?", lastPack: "previous pack", pcs: "Count",
     packPrice: c => `Pack price, ${c}`, optional: "optional",
-    finishOld: n => `Finished the old one — log the remaining ${n}`,
+    finishOld: (name, n) => `Finished ${name} — log the remaining ${n}`,
+    openPacks: "Open packs", leftOf: (n, size) => `${n} of ${size} left`,
+    finishPack: "Finish this pack", finishAsk: n => `Log the remaining ${n} as smoked and close the pack?`,
     look: "Appearance", theme: "Theme", dark: "Dark", light: "Light", lang: "Language",
     currency: "Currency", currencyHint: "Only the symbol changes — prices you entered aren't converted",
     remind: "Reminder", remindTitle: "Ask what's left every evening",
@@ -280,7 +284,7 @@ const L = {
     mismatch: "Doesn't add up", recorded: d => `Logged +${d}`, matches: "Matches the log",
     leftBody: (c, n) => `today ${c} ${L.en.sticksWord(c)} · ${n} left in the pack${n===0?" — pack is empty":""}`,
     badAnswer: "Didn't get that", badAnswerBody: i => `“${i}” — a number is needed. Enter what's left in the app.`,
-    staleAnswer: "Answer not saved", staleAnswerBody: "That reminder was about another pack. Enter what's left in the app.",
+    staleAnswer: "Answer not saved", staleAnswerBody: "The pack from that reminder is already finished or undone. Enter what's left in the app.",
     sticksDefault: "Sticks",
     notifPackTitle: "How many sticks are left in the pack?", notifNoPackTitle: "How many did you smoke today?",
     notifPackBody: (name, left, size) => `${name} — logged ${left} of ${size}`, notifNoPackBody: "Open the tracker and log a pack",
@@ -407,7 +411,8 @@ const DAY_START = 4; // до 4 утра считается ещё вчерашн
 const dayKey = t => localDate(new Date(t - DAY_START*3600e3));
 const shiftDay = (k, n) => { const d = new Date(k+"T12:00:00"); d.setDate(d.getDate()+n); return localDate(d); };
 const fmtTime = t => new Date(t).toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit"});
-const TRK_DEFAULT = { packs:[], log:[], cfg:{remind:null, time:"22:00"} };
+// cur — пачка, которую курят сейчас; открытыми могут быть несколько, у каждой свой остаток
+const TRK_DEFAULT = { packs:[], log:[], cur:null, cfg:{remind:null, time:"22:00"} };
 const NO_ITEMS = [];
 const TABS = [...Object.keys(TYPES), "tracker"];
 const tabIndex = t => TABS.indexOf(t);
@@ -443,10 +448,16 @@ const useTypeCfg = type => typeCfg(type, useContext(Ctx).lang);
 // и элементы: одна кривая запись в журнале уронила бы packLeft при каждом рендере
 const isPacks = v => Array.isArray(v) && v.every(p => isObj(p) && typeof p.size==="number");
 const isLog = v => Array.isArray(v) && v.every(e => isObj(e) && typeof e.n==="number" && typeof e.t==="number");
-const isTrkData = v => isObj(v) && isPacks(v.packs) && isLog(v.log);
+const isTrkData = v => isObj(v) && isPacks(v.packs) && isLog(v.log) && (v.cur==null || typeof v.cur==="string");
 async function loadTracker() {
   const [data, cfg] = await Promise.all([readJSON("trk_data", null, isTrkData), readJSON("trk_cfg", TRK_DEFAULT.cfg)]);
-  const withCfg = d => ({ packs:d.packs, log:d.log, cfg: {...TRK_DEFAULT.cfg, ...cfg} });
+  // переход на cur записываем сразу, а не ждём первого изменения в счётчике
+  const withCfg = async d => {
+    const r = withCur(d);
+    if (!("cur" in d) && r.packs.length && !unread.has("trk_data"))
+      await Preferences.set({ key: "trk_data", value: JSON.stringify(r) }).catch(()=>{});
+    return { ...r, cfg: {...TRK_DEFAULT.cfg, ...cfg} };
+  };
   // trk_data не прочитался — не лезем в старые ключи: после миграции их уже нет, был бы пустой счётчик
   if (data || unread.has("trk_data")) return withCfg(data || TRK_DEFAULT);
   const [packs, log] = await Promise.all([readJSON("trk_packs", TRK_DEFAULT.packs, isPacks), readJSON("trk_log", TRK_DEFAULT.log, isLog)]);
@@ -462,9 +473,28 @@ async function loadTracker() {
   }
   return withCfg({ packs, log });
 }
+// раньше открытой была только последняя пачка, а недокуренные старые просто бросали —
+// при переходе закрываем их, иначе все всплыли бы среди открытых
+// cur на пачку, которой нет (кривой бэкап), — берём последнюю открытую
+function withCur(d) {
+  const open = openPacks(d.packs, d.log);
+  if ("cur" in d) {
+    const cur = d.packs.some(p=>p.id===d.cur) ? d.cur : open.at(-1)?.id ?? null;
+    return { packs:d.packs, log:d.log, cur };
+  }
+  const last = d.packs.at(-1), openIds = new Set(open.map(p=>p.id));
+  const packs = d.packs.map(p => p!==last && openIds.has(p.id) ? {...p, done:true} : p);
+  return { packs, log:d.log, cur:last?.id ?? null };
+}
 const saveTracker = (k, v) => unread.has("trk_"+k) ? Promise.resolve() : Preferences.set({ key: "trk_"+k, value: JSON.stringify(v) });
 
-const packLeft = (p, log) => p ? p.size - log.reduce((s,e)=>e.pack===p.id?s+e.n:s, 0) : 0;
+const usedByPack = log => { const m = {}; log.forEach(e => { if (e.pack) m[e.pack] = (m[e.pack]||0) + e.n; }); return m; };
+const packLeft = (p, log) => p ? p.size - (usedByPack(log)[p.id]||0) : 0;
+// открытые пачки с остатками, по порядку открытия
+const openPacks = (packs, log) => {
+  const used = usedByPack(log);
+  return packs.map(p => ({...p, left:p.size-(used[p.id]||0)})).filter(p => !p.done && p.left>0);
+};
 const dayTotals = log => {
   const m = {};
   log.forEach(e => { const k = dayKey(e.t); m[k] = (m[k]||0) + e.n; });
@@ -827,6 +857,14 @@ td{padding:8px 0;border-bottom:1px solid var(--s2)}td:last-child,th:last-child{t
 .sbar{height:6px;background:var(--s2);border-radius:3px;margin-top:5px}
 .sbar-fill{height:100%;background:var(--fg);border-radius:3px}
 .panel{background:var(--s1);border:1px solid var(--line);border-radius:16px;padding:16px;margin-top:12px}
+/* пачки делят строку поровну — во всю ширину панелей; урезается имя, а не остаток */
+.chips.packs{margin-top:12px;padding-bottom:0}
+.chips.packs .chip{flex:1 1 0;min-width:0;display:flex;justify-content:center;gap:6px;padding:8px 12px;font-size:12.5px}
+.chips.packs .chip span:first-child{overflow:hidden;text-overflow:ellipsis}
+.chips.packs .chip span:last-child{flex:none;font-weight:600}
+.pack-pic{position:relative;flex:none}
+.pack-x{position:absolute;top:-7px;left:-7px;width:22px;height:22px;border-radius:50%;background:var(--s2);border:1px solid var(--line);color:var(--mute);font-size:10px;line-height:1;padding:0;display:flex;align-items:center;justify-content:center;cursor:pointer}
+.pack-x::before{content:"";position:absolute;inset:-10px}
 .big{font-size:56px;font-weight:700;line-height:1}
 .hint{color:var(--mute);font-size:12.5px;margin-top:3px;line-height:1.45}
 .flash{border-radius:12px;padding:11px 14px;font-size:13.5px;margin-top:6px;background:var(--ok-bg);border:1px solid var(--ok-line);color:var(--ok-fg)}
@@ -959,10 +997,13 @@ function LeftSheet({pack, left, name, onPick, onClose}) {
   );
 }
 
+const StickPic = ({s}) => s?.photo
+  ? <img src={photoSrc(s.photo)} style={{width:40,height:40,borderRadius:8,objectFit:"cover",flex:"none"}} alt=""/>
+  : <div className="disp" style={{width:40,height:40,borderRadius:8,background:"var(--fg)",color:"var(--bg)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:17,flex:"none"}}>{(s?.name||"?")[0].toUpperCase()}</div>;
 const stickSize = s => String(parseInt(s?.volume)||20);
 const stickPrice = s => String(priceAt(s, today()) || "");
 
-function PackSheet({sticks, cur, curLeft, onOpen, onClose, onAddSticks}) {
+function PackSheet({sticks, cur, curLeft, open, onOpen, onSwitch, onClose, onAddSticks}) {
   const money = useCur(), t = useT(), lang = useContext(Ctx).lang;
   const lastId = cur?.stickId;
   const ordered = [...sticks].sort((a,b)=>
@@ -970,7 +1011,10 @@ function PackSheet({sticks, cur, curLeft, onOpen, onClose, onAddSticks}) {
   const [sel, setSel] = useState(ordered[0]?.id||"");
   const [size, setSize] = useState(stickSize(ordered[0]));
   const [price, setPrice] = useState(stickPrice(ordered[0]));
-  const [finish, setFinish] = useState(true);
+  // пока не трогали — «докурил» только если открывают те же стики: другие курят параллельно
+  const [finishSet, setFinish] = useState(null);
+  const finish = finishSet ?? sel===cur?.stickId;
+  const others = open.filter(p=>p.id!==cur?.id);
   const choose = s => { setSel(s.id); setSize(stickSize(s)); setPrice(stickPrice(s)); };
 
   if (!sticks.length) return (
@@ -983,11 +1027,28 @@ function PackSheet({sticks, cur, curLeft, onOpen, onClose, onAddSticks}) {
   return (
     <Sheet onClose={onClose}>
       <h3 className="disp">{t("newPack")}</h3>
-      <div className="hint" style={{marginBottom:12}}>{t("whichSticks")}</div>
+      {others.length>0&&(
+        <>
+          <div className="hint" style={{marginBottom:12}}>{t("openPacks")}</div>
+          {others.map(p=>{
+            const s = sticks.find(x=>x.id===p.stickId);
+            return (
+              <div key={p.id} className="pick" onClick={()=>onSwitch(p.id)}>
+                <StickPic s={s}/>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontWeight:600,fontSize:14}}>{s?.name||t("deletedSticks")}</div>
+                  <div className="hint" style={{marginTop:1}}>{t("leftOf", p.left, p.size)}</div>
+                </div>
+                <div style={{fontSize:20,fontWeight:700,flex:"none"}}>{p.left}</div>
+              </div>
+            );
+          })}
+        </>
+      )}
+      <div className="hint" style={{margin:others.length?"6px 0 12px":"0 0 12px"}}>{t("whichSticks")}</div>
       {ordered.map(s=>(
         <div key={s.id} className={"pick"+(sel===s.id?" on":"")} onClick={()=>choose(s)}>
-          {s.photo?<img src={photoSrc(s.photo)} style={{width:40,height:40,borderRadius:8,objectFit:"cover",flex:"none"}} alt=""/>
-            :<div className="disp" style={{width:40,height:40,borderRadius:8,background:"var(--fg)",color:"var(--bg)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:17,flex:"none"}}>{(s.name||"?")[0].toUpperCase()}</div>}
+          <StickPic s={s}/>
           <div style={{flex:1,minWidth:0}}>
             <div style={{fontWeight:600,fontSize:14}}>{s.name}</div>
             <div className="hint" style={{marginTop:1}}>{s.id===lastId?t("lastPack"):s.manufacturer}</div>
@@ -1002,7 +1063,7 @@ function PackSheet({sticks, cur, curLeft, onOpen, onClose, onAddSticks}) {
       {curLeft>0&&(
         <div className="pick" style={{marginTop:14}} onClick={()=>setFinish(!finish)}>
           <div className={"chk"+(finish?" on":"")}>{finish?"✓":""}</div>
-          <div style={{flex:1,fontSize:13.5}}>{t("finishOld", curLeft)}</div>
+          <div style={{flex:1,fontSize:13.5}}>{t("finishOld", sticks.find(s=>s.id===cur.stickId)?.name||t("deletedSticks"), curLeft)}</div>
         </div>
       )}
       <button className="btn" style={{width:"100%",marginTop:16,padding:"14px 16px"}} disabled={!sel||!(parseInt(size)>0)}
@@ -1014,11 +1075,12 @@ function PackSheet({sticks, cur, curLeft, onOpen, onClose, onAddSticks}) {
 }
 
 
-function TrackerPage({trk, sticks, flash, onAdd, onDelEntry, onCancelPack, onSheet, onCfg}) {
+function TrackerPage({trk, cur, open, sticks, flash, onAdd, onSwitch, onFinish, onDelEntry, onCancelPack, onSheet, onCfg}) {
   const {packs, log, cfg} = trk;
   const money = useCur(), t = useT();
-  const cur = packs.at(-1);
   const left = packLeft(cur, log);
+  // переключатель — между открытыми пачками; текущая в нём, даже если уже пустая
+  const tabs = cur && !open.some(p=>p.id===cur.id) ? [...open, {...cur, left}] : open;
   const stick = cur && sticks.find(s=>s.id===cur.stickId);
   const totals = useMemo(()=>dayTotals(log),[log]);
   const packById = useMemo(()=>Object.fromEntries(packs.map(p=>[p.id,p])),[packs]);
@@ -1063,11 +1125,24 @@ function TrackerPage({trk, sticks, flash, onAdd, onDelEntry, onCancelPack, onShe
         </div>
       </div>
 
+      {tabs.length>1&&(
+        <div className="chips packs">
+          {tabs.map(p=>(
+            <button key={p.id} className={"chip"+(p.id===cur?.id?" on":"")} onClick={()=>p.id!==cur?.id&&onSwitch(p.id)}>
+              <span>{sticks.find(s=>s.id===p.stickId)?.name||t("deletedSticks")}</span><span>{p.left}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
       <div className="panel">
         {cur ? (
           <>
             <div style={{display:"flex",gap:12,alignItems:"center"}}>
-              {stick?.photo?<img src={photoSrc(stick.photo)} className="thumb" alt=""/>:<Tile l={stick||{name:"?"}}/>}
+              <div className="pack-pic">
+                {stick?.photo?<img src={photoSrc(stick.photo)} className="thumb" alt=""/>:<Tile l={stick||{name:"?"}}/>}
+                {left>0&&<button className="pack-x" aria-label={t("finishPack")} title={t("finishPack")} onClick={onFinish}>✕</button>}
+              </div>
               <div style={{flex:1,minWidth:0}}>
                 <div style={{fontWeight:600,fontSize:15}}>{stick?.name||t("deletedSticks")}</div>
                 <div className="hint">{t("openedAt", fmtDate(localDate(new Date(cur.opened))))}{forecast&&` · ${forecast}`}</div>
@@ -1086,7 +1161,7 @@ function TrackerPage({trk, sticks, flash, onAdd, onDelEntry, onCancelPack, onShe
               <button className="btn ghost" onClick={()=>onSheet("pack")}>{t("newPack")}</button>
             </div>
             {left===cur.size&&(
-              <button className="back" style={{padding:"12px 0 0",fontSize:12}} onClick={()=>onCancelPack(cur.id)}>{t("cancelPack")}</button>
+              <button className="back" style={{padding:"12px 0 0",fontSize:12,margin:"0 auto"}} onClick={()=>onCancelPack(cur.id)}>{t("cancelPack")}</button>
             )}
           </>
         ) : (
@@ -1548,7 +1623,7 @@ export default function App() {
   const langRef = useRef(app.lang);
   langRef.current = app.lang;
   const storeFail = e => reportStoreFail(langRef.current, e);
-  useEffect(()=>{ if (!loading && (trk.packs!==loaded.current.trk.packs || trk.log!==loaded.current.trk.log)) saveTracker("data",{packs:trk.packs, log:trk.log}).catch(e=>reportStoreFail(langRef.current, e, true)); },[loading,trk.packs,trk.log]);
+  useEffect(()=>{ if (!loading && (trk.packs!==loaded.current.trk.packs || trk.log!==loaded.current.trk.log || trk.cur!==loaded.current.trk.cur)) saveTracker("data",{packs:trk.packs, log:trk.log, cur:trk.cur}).catch(e=>reportStoreFail(langRef.current, e, true)); },[loading,trk.packs,trk.log,trk.cur]);
   useEffect(()=>{ if (!loading && trk.cfg!==loaded.current.trk.cfg) saveTracker("cfg",trk.cfg).catch(e=>reportStoreFail(langRef.current, e, true)); },[loading,trk.cfg]);
   useEffect(()=>{ if (!loading && app!==loaded.current.app) saveSettings(app).catch(e=>reportStoreFail(langRef.current, e, true)); },[loading,app]);
 
@@ -1565,15 +1640,43 @@ export default function App() {
   useEffect(()=>{ document.documentElement.lang = lang; registerActions(t); },[lang,t]);
 
   const sticks = allItems.sticks;
-  const curPack = trk.packs.at(-1);
+  const curPack = trk.packs.find(p=>p.id===trk.cur);
   const curLeft = packLeft(curPack, trk.log);
+  const open = useMemo(()=>openPacks(trk.packs, trk.log),[trk.packs,trk.log]);
   const curName = curPack ? (sticks.find(s=>s.id===curPack.stickId)?.name||t("sticksDefault")) : "";
+  // напоминание — про текущую пачку, а если она уже пустая — про последнюю открытую
+  const remPack = curLeft>0 ? curPack : open.at(-1) || curPack;
+  const remLeft = packLeft(remPack, trk.log);
+  const remName = remPack ? (sticks.find(s=>s.id===remPack.stickId)?.name||t("sticksDefault")) : "";
   // серия +1 — одно обновление напоминаний, а не по одному на каждое нажатие
   useEffect(()=>{
     if (loading) return;
-    const tm = setTimeout(()=>syncReminder(trk.cfg, curPack, curLeft, curName, t), 500);
+    const tm = setTimeout(()=>syncReminder(trk.cfg, remPack, remLeft, remName, t), 500);
     return ()=>clearTimeout(tm);
-  },[loading,trk.cfg,curPack,curLeft,curName,t]);
+  },[loading,trk.cfg,remPack,remLeft,remName,t]);
+
+  // статус в каталоге идёт за счётчиком: пачка снова открыта (удалили запись) — «В наличии»,
+  // докурили последнюю открытую пачку этих стиков — «Закончилось». Пять путей, которыми пачка
+  // кончается или открывается, сходятся здесь. Только на переходах: ручной статус между ними
+  // не трогаем. Отменённая пачка (её больше нет) — не «докурили», статус вернёт cancelPack
+  const openIds = open.map(p=>p.id).join(" ");
+  const prevOpen = useRef(null);
+  useEffect(()=>{
+    if (loading) return;
+    const prev = prevOpen.current, now = new Set(openIds.split(" ").filter(Boolean));
+    prevOpen.current = now;
+    if (!prev) return;
+    const byId = Object.fromEntries(trk.packs.map(p=>[p.id,p]));
+    const opened = new Set([...now].filter(id=>!prev.has(id)).map(id=>byId[id].stickId));
+    const stillOpen = new Set(open.map(p=>p.stickId));
+    const ended = new Set([...prev].filter(id=>!now.has(id)&&byId[id]&&!stillOpen.has(byId[id].stickId)).map(id=>byId[id].stickId));
+    sticks.forEach(s=>{
+      const status = opened.has(s.id)&&s.status!=="have" ? "have" : ended.has(s.id)&&s.status==="have" ? "out" : null;
+      if (status) upsert({...s, status}, "sticks");
+    });
+  // sticks берём из текущего рендера: срабатывать на правку карточки не нужно
+  // oxlint-disable-next-line react-hooks/exhaustive-deps
+  },[loading,openIds]);
 
   useEffect(()=>{
     if (!NATIVE) return;
@@ -1672,21 +1775,23 @@ export default function App() {
 
   /* tracker actions */
   const todayCount = log => dayTotals(log)[dayKey(Date.now())]||0;
-  const addEntry = (n, kind) => {
-    const e = {id:uid(), t:Date.now(), n, pack:curPack.id, ...(kind?{kind}:{})};
+  const addEntry = (n, kind, pack=curPack) => {
+    const e = {id:uid(), t:Date.now(), n, pack:pack.id, ...(kind?{kind}:{})};
     setTrk(p=>({...p, log:[...p.log, e]}));
     return [...trk.log, e];
   };
   // notifId — если ответили из шторки: Android 15+ не даёт такое уведомление удалить,
   // поэтому заменяем его итогом с тем же id (иначе оно так и висит с крутилкой)
-  const applyLeft = (n, notifId) => setSheet(null, ()=>{
-    if (!curPack) return;
-    if (n>curLeft) {
-      const text = t("tooMany", curLeft);
+  // pack — не текущая, если ответили из шторки про пачку, на которую уже переключились
+  const applyLeft = (n, notifId, pack=curPack) => setSheet(null, ()=>{
+    if (!pack) return;
+    const left = packLeft(pack, trk.log);
+    if (n>left) {
+      const text = t("tooMany", left);
       setFlash({err:true, text}); notifyResult(notifId, t("mismatch"), text);
       return;
     }
-    const d = curLeft-n, log = d>0 ? addEntry(d,"left") : trk.log, c = todayCount(log);
+    const d = left-n, log = d>0 ? addEntry(d,"left",pack) : trk.log, c = todayCount(log);
     const title = d>0 ? t("recorded", d) : t("matches");
     const body = t("leftBody", c, n);
     setFlash({text:`${title} · ${body}`});
@@ -1695,16 +1800,34 @@ export default function App() {
   const openPack = ({stickId, size, price, finishOld}) => setSheet(null, ()=>{
     const id = uid(), now = Date.now();
     // траты считаются по истории цен в каталоге — новую цену записываем туда, на сегодня
+    // и статус «В наличии» — той же записью, а не второй параллельной из эффекта статусов
     const s = sticks.find(x=>x.id===stickId), d = today();
-    if (s && price>0 && price!==priceAt(s, d))
-      upsert({...s, prices:[...(s.prices||[]).filter(x=>x.date!==d), {date:d, price}]}, "sticks");
+    const newPrice = price>0 && price!==priceAt(s, d);
+    if (s && (newPrice || s.status!=="have"))
+      upsert({...s, status:"have", ...(newPrice?{prices:[...(s.prices||[]).filter(x=>x.date!==d), {date:d, price}]}:{})}, "sticks");
     setTrk(p=>{
-      const old = p.packs.at(-1), l = packLeft(old, p.log);
+      const old = p.packs.find(x=>x.id===p.cur), l = packLeft(old, p.log);
       const log = finishOld&&l>0 ? [...p.log, {id:uid(), t:now, n:l, pack:old.id, kind:"finish", by:id}] : p.log;
-      return {...p, log, packs:[...p.packs, {id, stickId, size, price, opened:now}]};
+      // prev и prevStatus — чтобы отмена вернула всё как было
+      return {...p, log, packs:[...p.packs, {id, stickId, size, price, opened:now, prev:p.cur, prevStatus:s?.status||""}], cur:id};
     });
   });
-  const cancelPack = id => setTrk(p=>({...p, packs:p.packs.filter(x=>x.id!==id), log:p.log.filter(e=>e.by!==id)}));
+  // отмена: статус стиков — какой был до открытия, если других открытых пачек этих стиков нет;
+  // текущей — та, что была до неё (её «докурил» тоже отменился), иначе последняя открытая
+  const cancelPack = id => {
+    const pack = trk.packs.find(x=>x.id===id), s = pack && sticks.find(x=>x.id===pack.stickId);
+    if (s && pack.prevStatus!=null && s.status!==pack.prevStatus && !open.some(p=>p.id!==id&&p.stickId===s.id))
+      upsert({...s, status:pack.prevStatus}, "sticks");
+    setTrk(p=>{
+      const packs = p.packs.filter(x=>x.id!==id), log = p.log.filter(e=>e.by!==id), left = openPacks(packs, log);
+      const back = left.find(x=>x.id===pack?.prev)?.id ?? left.at(-1)?.id ?? null;
+      return {...p, packs, log, cur: p.cur!==id ? p.cur : back};
+    });
+  };
+  const switchPack = id => setTrk(p=>({...p, cur:id}));
+  const finishPack = () => {
+    if (curLeft>0 && confirm(t("finishAsk", curLeft))) addEntry(curLeft, "finish");
+  };
   const setTrkCfg = async patch => {
     if (patch.remind&&NATIVE) {
       try {
@@ -1721,7 +1844,7 @@ export default function App() {
     if (!NATIVE) return setFlash({err:true, text:t("notifWebOnly")});
     try {
       await actionsReady;
-      await LocalNotifications.schedule({ notifications: [{ id:TEST_ID, ...reminderPayload(curPack, curLeft, curName, t) }] });
+      await LocalNotifications.schedule({ notifications: [{ id:TEST_ID, ...reminderPayload(remPack, remLeft, remName, t) }] });
       setFlash({text:t("notifSent")});
     } catch (e) { setFlash({err:true, text:t("failed")+(e?.message||String(e))}); }
   };
@@ -1735,12 +1858,15 @@ export default function App() {
     const inForm = view.page==="form";
     if (!inForm) switchTab("tracker");
     if (kind==="summary") return;
-    // напоминание висело в шторке, а пачку с тех пор сменили или отменили
-    const stale = !curPack || (pack && pack!==curPack.id);
+    // напоминание висело в шторке, а пачку с тех пор докурили или отменили
+    const target = pack ? trk.packs.find(p=>p.id===pack) : curPack, stale = !(packLeft(target, trk.log)>0);
     const n = input!=null && /^\d+$/.test(input.trim()) ? Number(input.trim()) : NaN;
-    if (!stale && !isNaN(n)) return applyLeft(n, id);
+    if (!stale && !isNaN(n)) return applyLeft(n, id, target);
     if (input!=null) notifyResult(id, ...(stale ? [t("staleAnswer"), t("staleAnswerBody")] : [t("badAnswer"), t("badAnswerBody", input)]));
-    if (curLeft>0 && !inForm) setSheet("left");
+    if (inForm) return;
+    // остаток вводят для той пачки, про которую спрашивали, — на неё и переключаем
+    if (!stale) { if (target.id!==trk.cur) switchPack(target.id); setSheet("left"); }
+    else if (curLeft>0) setSheet("left");
   // срабатывает только на новое событие; остальное берём из текущего рендера
   // oxlint-disable-next-line react-hooks/exhaustive-deps
   },[loading,pendingAct]);
@@ -1776,8 +1902,8 @@ export default function App() {
           </div>
           <div key={tab} className={"swipe "+slide}>
           {!cfg?(loading?<div className="empty">{t("loading")}</div>:(
-            <TrackerPage trk={trk} sticks={sticks} flash={flash}
-              onAdd={()=>addEntry(1)} onDelEntry={id=>setTrk(p=>({...p,log:p.log.filter(e=>e.id!==id)}))}
+            <TrackerPage trk={trk} cur={curPack} open={open} sticks={sticks} flash={flash}
+              onAdd={()=>addEntry(1)} onSwitch={switchPack} onFinish={finishPack} onDelEntry={id=>setTrk(p=>({...p,log:p.log.filter(e=>e.id!==id)}))}
               onCancelPack={cancelPack} onSheet={setSheet} onCfg={setTrkCfg}/>
           )):<>
           {items.length>0&&(
@@ -1841,7 +1967,7 @@ export default function App() {
         <LeftSheet pack={curPack} left={curLeft} name={curName} onPick={applyLeft} onClose={()=>setSheet(null)}/>
       )}
       {sheet==="pack"&&(
-        <PackSheet sticks={sticks} cur={curPack} curLeft={curLeft} onOpen={openPack} onClose={()=>setSheet(null)}
+        <PackSheet sticks={sticks} cur={curPack} curLeft={curLeft} open={open} onOpen={openPack} onSwitch={id=>setSheet(null, ()=>switchPack(id))} onClose={()=>setSheet(null)}
           onAddSticks={()=>{setSheet(null);switchTab("sticks");setView({page:"form"})}}/>
       )}
 

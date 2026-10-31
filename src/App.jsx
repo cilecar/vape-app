@@ -171,7 +171,7 @@ const L = {
     currency: "Валюта", currencyHint: "Меняется только значок — введённые цены не пересчитываются по курсу",
     remind: "Напоминание", remindTitle: "Каждый вечер спрашивать остаток",
     remindNative: "Ответить можно прямо из уведомления", remindWeb: "Работает только в приложении на телефоне", test: "Проверить",
-    backup: "Резервная копия", backupHint: "Жижи, стики, фото, счётчик и настройки — в одном файле",
+    backup: "Резервная копия", backupHint: "Каталоги, фото, счётчик и настройки — в одном файле",
     backupSave: "Сохранить бэкап", backupShare: "Отправить файл", restore: "Восстановить из файла",
     backupSaved: p => `Сохранено: ${p}`, backupFail: "Не удалось сохранить: ",
     restoreAsk: d => `Все текущие данные заменятся данными из бэкапа${d?" от "+d:""}. Продолжить?`,
@@ -204,6 +204,18 @@ const L = {
     notifPackTitle: "Сколько стиков осталось в пачке?", notifNoPackTitle: "Сколько выкурил сегодня?",
     notifPackBody: (name, left, size) => `${name} — по записям ${left} из ${size}`, notifNoPackBody: "Открой счётчик и отметь пачку",
     actDone: "Готово",
+    trackWhat: "Счётчик считает", trackHint: "У стиков и сигарет свои пачки и статистика — переключение ничего не стирает",
+    // счётчик сигарет: эти тексты заменяют «стиковые» (makeT)
+    cigTrk: {
+      sticksWord: n => plural(n, ["сигарета","сигареты","сигарет"]),
+      todayN: n => `${L.ru.cigTrk.sticksWord(n)} сегодня`,
+      deletedSticks: "Удалённые сигареты", plusOne: "+1 сигарета",
+      noPackHint: "Выбери сигареты — дальше отмечай по штуке или вечером вводи, сколько осталось",
+      addSticksFirst: "Сначала добавь сигареты во вкладке «Сигареты» — потом выбирай их здесь.",
+      whichSticks: "Какие сигареты открыл?", sticksDefault: "Сигареты",
+      notifPackTitle: "Сколько сигарет осталось в пачке?",
+      leftBody: (c, n) => `сегодня ${c} ${L.ru.cigTrk.sticksWord(c)} · в пачке осталось ${n}${n===0?" — пачка кончилась":""}`,
+    },
     types: {
       vape: {
         tabLabel: "Жижи", title: "ЖИЖИ", addBtn: "+ Добавить жижу", newTitle: "Новая жижа",
@@ -274,7 +286,7 @@ const L = {
     currency: "Currency", currencyHint: "Only the symbol changes — prices you entered aren't converted",
     remind: "Reminder", remindTitle: "Ask what's left every evening",
     remindNative: "You can reply right from the notification", remindWeb: "Works only in the phone app", test: "Test",
-    backup: "Backup", backupHint: "Liquids, sticks, photos, tracker and settings — in one file",
+    backup: "Backup", backupHint: "Catalogs, photos, tracker and settings — in one file",
     backupSave: "Save backup", backupShare: "Send file", restore: "Restore from file",
     backupSaved: p => `Saved: ${p}`, backupFail: "Couldn't save: ",
     restoreAsk: d => `All current data will be replaced with the backup${d?" from "+d:""}. Continue?`,
@@ -304,6 +316,17 @@ const L = {
     notifPackTitle: "How many sticks are left in the pack?", notifNoPackTitle: "How many did you smoke today?",
     notifPackBody: (name, left, size) => `${name} — logged ${left} of ${size}`, notifNoPackBody: "Open the tracker and log a pack",
     actDone: "Done",
+    trackWhat: "Tracker counts", trackHint: "Sticks and cigarettes keep their own packs and stats — switching erases nothing",
+    cigTrk: {
+      sticksWord: n => n===1 ? "cigarette" : "cigarettes",
+      todayN: n => `${L.en.cigTrk.sticksWord(n)} today`,
+      deletedSticks: "Deleted cigarettes", plusOne: "+1 cigarette",
+      noPackHint: "Pick your cigarettes — then tap one at a time or enter what's left in the evening",
+      addSticksFirst: "Add cigarettes in the “Cigarettes” tab first — then pick them here.",
+      whichSticks: "Which cigarettes did you open?", sticksDefault: "Cigarettes",
+      notifPackTitle: "How many cigarettes are left in the pack?",
+      leftBody: (c, n) => `today ${c} ${L.en.cigTrk.sticksWord(c)} · ${n} left in the pack${n===0?" — pack is empty":""}`,
+    },
     types: {
       vape: {
         tabLabel: "Liquids", title: "LIQUIDS", addBtn: "+ Add liquid", newTitle: "New liquid",
@@ -340,7 +363,11 @@ If you don't know, leave the field as an empty string.`,
 };
 const LANGS = { ru: "Русский", en: "English" };
 // t("key", ...args): строка или функция из словаря; чего нет в английском — берём из русского
-const makeT = lang => (k, ...a) => { const v = L[lang]?.[k] ?? L.ru[k] ?? k; return typeof v==="function" ? v(...a) : v; };
+// track — что считает счётчик: для сигарет его тексты берутся из cigTrk
+const makeT = (lang, track) => {
+  const over = track==="cigs" ? {...L.ru.cigTrk, ...L[lang]?.cigTrk} : {};
+  return (k, ...a) => { const v = over[k] ?? L[lang]?.[k] ?? L.ru[k] ?? k; return typeof v==="function" ? v(...a) : v; };
+};
 const typeCfg = (type, lang) => {
   const tx = (L[lang]||L.ru).types[type];
   return { ...TYPES[type], ...tx, criteria: TYPES[type].criteria.map(k=>[k, tx.crit[k]]) };
@@ -446,7 +473,8 @@ const tabLabel = (k, lang, t) => TYPES[k] ? typeCfg(k, lang).tabLabel : t("tab.t
 
 /* ── settings ── */
 // tabs — видимость вкладок; сигареты появились позже, у тех, кто ими не пользуется, — выключены
-const APP_DEFAULT = { currency:"USD", lang:"ru", theme:"dark", ai:true, geminiKey:"", tabs:{vape:true, sticks:true, cigs:false, tracker:true} };
+const APP_DEFAULT = { currency:"USD", lang:"ru", theme:"dark", ai:true, geminiKey:"", tabs:{vape:true, sticks:true, cigs:false, tracker:true}, track:"sticks" };
+const TRACKABLE = ["sticks","cigs"];
 // только подпись: уже введённые цены не пересчитываются
 const CURRENCIES = { USD:{ru:"$", en:"$"}, EUR:{ru:"€", en:"€"}, RUB:{ru:"₽", en:"₽"}, RSD:{ru:"дин", en:"din"} };
 const THEMES = ["dark","light"];
@@ -456,7 +484,8 @@ async function loadSettings(trkCfg) {
   // вкладки — только true/false; все выключены (правленый руками бэкап) — как по умолчанию
   const tabs = Object.fromEntries(TABS.map(k=>[k, typeof saved.tabs?.[k]==="boolean" ? saved.tabs[k] : APP_DEFAULT.tabs[k]]));
   return { ...APP_DEFAULT, ...(trkCfg.currency?{currency:trkCfg.currency}:{}), ...saved,
-    tabs: Object.values(tabs).some(Boolean) ? tabs : APP_DEFAULT.tabs };
+    tabs: Object.values(tabs).some(Boolean) ? tabs : APP_DEFAULT.tabs,
+    track: TRACKABLE.includes(saved.track) ? saved.track : APP_DEFAULT.track };
 }
 const saveSettings = v => unread.has("app_cfg") ? Promise.resolve() : Preferences.set({ key: "app_cfg", value: JSON.stringify(v) });
 // ошибка записи — сразу окном (flash виден не на всех экранах). Фоновые записи (счётчик пишет
@@ -525,6 +554,15 @@ const packLeft = (p, log) => p ? p.size - (usedByPack(log)[p.id]||0) : 0;
 const openPacks = (packs, log) => {
   const used = usedByPack(log);
   return packs.map(p => ({...p, left:p.size-(used[p.id]||0)})).filter(p => !p.done && p.left>0);
+};
+// у пачки сигарет type:"cigs"; у старых пачек его нет — это стики
+const packType = p => p?.type || "sticks";
+// пачки и записи одного вида. Запись без пачки (её отменили) — к стикам, как и всё старое
+const trkOfType = (trk, type) => {
+  const packs = trk.packs.filter(p=>packType(p)===type);
+  if (type==="sticks" && packs.length===trk.packs.length) return trk;
+  const ids = new Set(packs.map(p=>p.id)), other = new Set(trk.packs.map(p=>p.id).filter(id=>!ids.has(id)));
+  return {...trk, packs, log: trk.log.filter(e=>type==="sticks" ? !other.has(e.pack) : ids.has(e.pack))};
 };
 const dayTotals = log => {
   const m = {};
@@ -1036,10 +1074,11 @@ const StickPic = ({s}) => s?.photo
 const stickSize = s => String(parseInt(s?.volume)||20);
 const stickPrice = s => String(priceAt(s, today()) || "");
 
-function PackSheet({sticks, cur, curLeft, open, onOpen, onSwitch, onClose, onAddSticks}) {
+// items — каталог, из которого открывают пачку; sticks — стики и сигареты, по ним ищем открытые пачки
+function PackSheet({type, items, sticks, cur, curLeft, open, onOpen, onSwitch, onClose, onAddSticks}) {
   const money = useCur(), t = useT(), lang = useContext(Ctx).lang;
   const lastId = cur?.stickId;
-  const ordered = [...sticks].sort((a,b)=>
+  const ordered = [...items].sort((a,b)=>
     (b.id===lastId)-(a.id===lastId) || (b.status==="have")-(a.status==="have") || (a.name||"").localeCompare(b.name||"",lang));
   const [sel, setSel] = useState(ordered[0]?.id||"");
   const [size, setSize] = useState(stickSize(ordered[0]));
@@ -1050,11 +1089,11 @@ function PackSheet({sticks, cur, curLeft, open, onOpen, onSwitch, onClose, onAdd
   const others = open.filter(p=>p.id!==cur?.id);
   const choose = s => { setSel(s.id); setSize(stickSize(s)); setPrice(stickPrice(s)); };
 
-  if (!sticks.length) return (
+  if (!items.length) return (
     <Sheet onClose={onClose}>
       <h3 className="disp">{t("newPack")}</h3>
       <div className="hint" style={{margin:"6px 0 16px"}}>{t("addSticksFirst")}</div>
-      <button className="btn" style={{width:"100%"}} onClick={onAddSticks}>{typeCfg("sticks",lang).addBtn}</button>
+      <button className="btn" style={{width:"100%"}} onClick={onAddSticks}>{typeCfg(type,lang).addBtn}</button>
     </Sheet>
   );
   return (
@@ -1348,6 +1387,11 @@ function SettingsPage({app, onApp, trkCfg, onTrkCfg, onTest, flash, onFlash, onB
           );
         })}
       </div>
+      {app.tabs.tracker&&<>
+        <div className="sec">{t("trackWhat")}</div>
+        {chips(TRACKABLE.map(k=>[k, tabLabel(k, app.lang, t)]), app.track, track=>onApp({track}))}
+        <div className="hint">{t("trackHint")}</div>
+      </>}
 
       <div className="sec">{t("currency")}</div>
       {chips(Object.entries(CURRENCIES).map(([k,sym])=>[k,`${sym[app.lang]} · ${k}`]), app.currency, currency=>onApp({currency}))}
@@ -1700,12 +1744,12 @@ export default function App() {
   useEffect(()=>{ if (!loading && app!==loaded.current.app) saveSettings(app).catch(e=>reportStoreFail(langRef.current, e, true)); },[loading,app]);
 
   const {lang, theme} = app;
-  const t = useMemo(()=>makeT(lang),[lang]);
+  const t = useMemo(()=>makeT(lang, app.track),[lang,app.track]);
   const cur = (CURRENCIES[app.currency] || CURRENCIES[APP_DEFAULT.currency])[lang];
   const ai = useMemo(()=>({on:app.ai, key:app.geminiKey}),[app.ai,app.geminiKey]);
   const tabs = useMemo(()=>TABS.filter(k=>app.tabs[k]),[app.tabs]);
   const tabIndex = k => tabs.indexOf(k);
-  // со скрытой вкладки (стики из «Новой пачки» счётчика) — обратно в счётчик
+  // со скрытой вкладки (стики или сигареты из «Новой пачки» счётчика) — обратно в счётчик
   const homeTab = tabs.includes(tab) || !tabs.includes("tracker") ? tabs[0] : "tracker";
   const ctx = useMemo(()=>({cur, lang, t, ai}),[cur,lang,t,ai]);
   useEffect(()=>{
@@ -1715,10 +1759,21 @@ export default function App() {
   },[theme]);
   useEffect(()=>{ document.documentElement.lang = lang; registerActions(t); },[lang,t]);
 
-  const sticks = allItems.sticks;
-  const curPack = trk.packs.find(p=>p.id===trk.cur);
+  // пачки стиков и сигарет лежат в одном trk_data, у пачки сигарет type:"cigs" (у старых
+  // пачек его нет — это стики). Счётчик показывает только то, что выбрано в app.track
+  const track = app.track;
+  const sticks = useMemo(()=>[...allItems.sticks, ...allItems.cigs],[allItems.sticks,allItems.cigs]);
+  const cigIds = useMemo(()=>new Set(allItems.cigs.map(x=>x.id)),[allItems.cigs]);
+  const typeOf = s => cigIds.has(s.id) ? "cigs" : "sticks";
+  const trkShown = useMemo(()=>trkOfType(trk, track),[trk,track]);
+  // все открытые — для статусов в каталоге, видимые — для счётчика
+  const openAll = useMemo(()=>openPacks(trk.packs, trk.log),[trk.packs,trk.log]);
+  const open = useMemo(()=>openPacks(trkShown.packs, trkShown.log),[trkShown]);
+  // текущая — общая на оба вида. Указывает на пачку другого вида (переключили, что считать) —
+  // последняя открытая этого, а нет открытых — последняя («пачка кончилась»)
+  const curOther = trk.cur!=null && !trkShown.packs.some(p=>p.id===trk.cur);
+  const curPack = trkShown.packs.find(p=>p.id===trk.cur) ?? open.at(-1) ?? (curOther ? trkShown.packs.at(-1) : undefined);
   const curLeft = packLeft(curPack, trk.log);
-  const open = useMemo(()=>openPacks(trk.packs, trk.log),[trk.packs,trk.log]);
   const curName = curPack ? (sticks.find(s=>s.id===curPack.stickId)?.name||t("sticksDefault")) : "";
   // напоминание — про текущую пачку, а если она уже пустая — про последнюю открытую
   const remPack = curLeft>0 ? curPack : open.at(-1) || curPack;
@@ -1738,7 +1793,7 @@ export default function App() {
   // докурили последнюю открытую пачку этих стиков — «Закончилось». Пять путей, которыми пачка
   // кончается или открывается, сходятся здесь. Только на переходах: ручной статус между ними
   // не трогаем. Отменённая пачка (её больше нет) — не «докурили», статус вернёт cancelPack
-  const openIds = open.map(p=>p.id).join(" ");
+  const openIds = openAll.map(p=>p.id).join(" ");
   const prevOpen = useRef(null);
   useEffect(()=>{
     if (loading) return;
@@ -1747,11 +1802,11 @@ export default function App() {
     if (!prev) return;
     const byId = Object.fromEntries(trk.packs.map(p=>[p.id,p]));
     const opened = new Set([...now].filter(id=>!prev.has(id)).map(id=>byId[id].stickId));
-    const stillOpen = new Set(open.map(p=>p.stickId));
+    const stillOpen = new Set(openAll.map(p=>p.stickId));
     const ended = new Set([...prev].filter(id=>!now.has(id)&&byId[id]&&!stillOpen.has(byId[id].stickId)).map(id=>byId[id].stickId));
     sticks.forEach(s=>{
       const status = opened.has(s.id)&&s.status!=="have" ? "have" : ended.has(s.id)&&s.status==="have" ? "out" : null;
-      if (status) upsert({...s, status}, "sticks");
+      if (status) upsert({...s, status}, typeOf(s));
     });
   // sticks берём из текущего рендера: срабатывать на правку карточки не нужно
   // oxlint-disable-next-line react-hooks/exhaustive-deps
@@ -1865,7 +1920,8 @@ export default function App() {
   const startCompare = id => setView({page:"list"}, ()=>{ setCmpIds([id]); setCmpMode(true); });
 
   /* tracker actions */
-  const todayCount = log => dayTotals(log)[dayKey(Date.now())]||0;
+  // сегодня — по пачкам того же вида, что и эта, так же, как считает экран счётчика
+  const todayCount = (log, pack) => dayTotals(trkOfType({...trk, log}, packType(pack)).log)[dayKey(Date.now())]||0;
   const addEntry = (n, kind, pack=curPack) => {
     const e = {id:uid(), t:Date.now(), n, pack:pack.id, ...(kind?{kind}:{})};
     setTrk(p=>({...p, log:[...p.log, e]}));
@@ -1874,15 +1930,17 @@ export default function App() {
   // notifId — если ответили из шторки: Android 15+ не даёт такое уведомление удалить,
   // поэтому заменяем его итогом с тем же id (иначе оно так и висит с крутилкой)
   // pack — не текущая, если ответили из шторки про пачку, на которую уже переключились
+  // тексты — по виду пачки: напоминание могло прийти до переключения «что считать»
   const applyLeft = (n, notifId, pack=curPack) => setSheet(null, ()=>{
     if (!pack) return;
+    const t = makeT(lang, packType(pack));
     const left = packLeft(pack, trk.log);
     if (n>left) {
       const text = t("tooMany", left);
       setFlash({err:true, text}); notifyResult(notifId, t("mismatch"), text);
       return;
     }
-    const d = left-n, log = d>0 ? addEntry(d,"left",pack) : trk.log, c = todayCount(log);
+    const d = left-n, log = d>0 ? addEntry(d,"left",pack) : trk.log, c = todayCount(log, pack);
     const title = d>0 ? t("recorded", d) : t("matches");
     const body = t("leftBody", c, n);
     setFlash({text:`${title} · ${body}`});
@@ -1895,20 +1953,22 @@ export default function App() {
     const s = sticks.find(x=>x.id===stickId), d = today();
     const newPrice = price>0 && price!==priceAt(s, d);
     if (s && (newPrice || s.status!=="have"))
-      upsert({...s, status:"have", ...(newPrice?{prices:[...(s.prices||[]).filter(x=>x.date!==d), {date:d, price}]}:{})}, "sticks");
+      upsert({...s, status:"have", ...(newPrice?{prices:[...(s.prices||[]).filter(x=>x.date!==d), {date:d, price}]}:{})}, typeOf(s));
+    // старая — та, что показана в счётчике: p.cur мог остаться на пачке другого вида
+    const oldId = curPack?.id ?? null, type = track==="sticks" ? {} : {type:track};
     setTrk(p=>{
-      const old = p.packs.find(x=>x.id===p.cur), l = packLeft(old, p.log);
+      const old = p.packs.find(x=>x.id===oldId), l = packLeft(old, p.log);
       const log = finishOld&&l>0 ? [...p.log, {id:uid(), t:now, n:l, pack:old.id, kind:"finish", by:id}] : p.log;
       // prev и prevStatus — чтобы отмена вернула всё как было
-      return {...p, log, packs:[...p.packs, {id, stickId, size, price, opened:now, prev:p.cur, prevStatus:s?.status||""}], cur:id};
+      return {...p, log, packs:[...p.packs, {id, stickId, ...type, size, price, opened:now, prev:oldId, prevStatus:s?.status||""}], cur:id};
     });
   });
   // отмена: статус стиков — какой был до открытия, если других открытых пачек этих стиков нет;
   // текущей — та, что была до неё (её «докурил» тоже отменился), иначе последняя открытая
   const cancelPack = id => {
     const pack = trk.packs.find(x=>x.id===id), s = pack && sticks.find(x=>x.id===pack.stickId);
-    if (s && pack.prevStatus!=null && s.status!==pack.prevStatus && !open.some(p=>p.id!==id&&p.stickId===s.id))
-      upsert({...s, status:pack.prevStatus}, "sticks");
+    if (s && pack.prevStatus!=null && s.status!==pack.prevStatus && !openAll.some(p=>p.id!==id&&p.stickId===s.id))
+      upsert({...s, status:pack.prevStatus}, typeOf(s));
     setTrk(p=>{
       const packs = p.packs.filter(x=>x.id!==id), log = p.log.filter(e=>e.by!==id), left = openPacks(packs, log);
       const back = left.find(x=>x.id===pack?.prev)?.id ?? left.at(-1)?.id ?? null;
@@ -1955,8 +2015,13 @@ export default function App() {
     if (!stale && !isNaN(n)) return applyLeft(n, id, target);
     if (input!=null) notifyResult(id, ...(stale ? [t("staleAnswer"), t("staleAnswerBody")] : [t("badAnswer"), t("badAnswerBody", input)]));
     if (inForm) return;
-    // остаток вводят для той пачки, про которую спрашивали, — на неё и переключаем
-    if (!stale) { if (target.id!==trk.cur) switchPack(target.id); setSheet("left"); }
+    // остаток вводят для той пачки, про которую спрашивали, — на неё и переключаем,
+    // и счётчик — на её вид, иначе в нём покажется пачка другого вида
+    if (!stale) {
+      if (packType(target)!==track) setApp(p=>({...p, track:packType(target)}));
+      if (target.id!==trk.cur) switchPack(target.id);
+      setSheet("left");
+    }
     else if (curLeft>0) setSheet("left");
   // срабатывает только на новое событие; остальное берём из текущего рендера
   // oxlint-disable-next-line react-hooks/exhaustive-deps
@@ -1993,7 +2058,7 @@ export default function App() {
           </div>
           <div key={tab} className={"swipe "+slide}>
           {!cfg?(loading?<div className="empty">{t("loading")}</div>:(
-            <TrackerPage trk={trk} cur={curPack} open={open} sticks={sticks} flash={flash}
+            <TrackerPage trk={trkShown} cur={curPack} open={open} sticks={sticks} flash={flash}
               onAdd={()=>addEntry(1)} onSwitch={switchPack} onFinish={finishPack} onDelEntry={id=>setTrk(p=>({...p,log:p.log.filter(e=>e.id!==id)}))}
               onCancelPack={cancelPack} onSheet={setSheet} onCfg={setTrkCfg}/>
           )):<>
@@ -2058,8 +2123,8 @@ export default function App() {
         <LeftSheet pack={curPack} left={curLeft} name={curName} onPick={applyLeft} onClose={()=>setSheet(null)}/>
       )}
       {sheet==="pack"&&(
-        <PackSheet sticks={sticks} cur={curPack} curLeft={curLeft} open={open} onOpen={openPack} onSwitch={id=>setSheet(null, ()=>switchPack(id))} onClose={()=>setSheet(null)}
-          onAddSticks={()=>{setSheet(null);switchTab("sticks");setView({page:"form"})}}/>
+        <PackSheet type={app.track} items={allItems[app.track]} sticks={sticks} cur={curPack} curLeft={curLeft} open={open} onOpen={openPack} onSwitch={id=>setSheet(null, ()=>switchPack(id))} onClose={()=>setSheet(null)}
+          onAddSticks={()=>{setSheet(null);switchTab(app.track);setView({page:"form"})}}/>
       )}
 
       {view.page==="settings"&&(
@@ -2073,7 +2138,7 @@ export default function App() {
           onCancel={()=>setView(view.id?{page:"detail",id:view.id}:{page:"list"})}/>
       )}
       {view.page==="detail"&&current&&(
-        <Detail l={current} type={tab} smoked={tab==="sticks"?smokedOf(current.id):null} onUpdate={upsert}
+        <Detail l={current} type={tab} smoked={TRACKABLE.includes(tab)?smokedOf(current.id):null} onUpdate={upsert}
           onEdit={()=>setView({page:"form",id:current.id})}
           onDelete={del} onBack={()=>setView({page:"list"})}
           onStartCompare={startCompare}/>

@@ -117,6 +117,7 @@ const dropPhoto = p => { if (isPhotoFile(p)) Filesystem.deleteFile({ path: p, di
 const TYPES = {
   vape: { key: "liq:", idsKey: "liq_ids", showNicotine: true, criteria: ["taste","feel","accuracy","fatigue","repeat"] },
   sticks: { key: "stk:", idsKey: "stk_ids", showNicotine: false, criteria: ["taste","feel","smell","aftertaste","repeat"] },
+  cigs: { key: "cig:", idsKey: "cig_ids", showNicotine: false, criteria: ["taste","feel","smell","aftertaste","repeat"] },
 };
 
 const STATUSES = {
@@ -166,6 +167,7 @@ const L = {
     finishPack: "Закончить пачку", finishAsk: n => `Записать оставшиеся ${n} шт как выкуренные и закрыть пачку?`,
     // настройки
     look: "Оформление", theme: "Тема", dark: "Тёмная", light: "Светлая", lang: "Язык",
+    tabs: "Вкладки", tabsHint: "Какие вкладки показывать на главном экране",
     currency: "Валюта", currencyHint: "Меняется только значок — введённые цены не пересчитываются по курсу",
     remind: "Напоминание", remindTitle: "Каждый вечер спрашивать остаток",
     remindNative: "Ответить можно прямо из уведомления", remindWeb: "Работает только в приложении на телефоне", test: "Проверить",
@@ -223,6 +225,16 @@ const L = {
 {"manufacturer":"линейка стиков (Terea, Heets, Fiit, Sentia, Delia)","name":"полное название: линейка + вариант (Terea Amber)","flavor":"1-2 предложения: табак, ментол/капсула, фруктовые ноты, крепость","volume":"штук в пачке (20 шт)"}
 Если не знаешь — оставь поле пустой строкой.`,
       },
+      cigs: {
+        tabLabel: "Сигареты", title: "СИГАРЕТЫ", addBtn: "+ Добавить сигареты", newTitle: "Новые сигареты",
+        emptyHint: "Добавь первую пачку сигарет", deleteMsg: "Удалить сигареты?", backLabel: "← Все сигареты",
+        searchPlaceholder: "Напр.: Parliament Aqua Blue", unit: "шт", volumeLabel: "В пачке", volumePlaceholder: "20 шт",
+        crit: { taste: "Вкус", feel: "Крепость затяжки", smell: "Запах (не воняет)", aftertaste: "Послевкусие", repeat: "Купил бы снова" },
+        ai: q => `Сигареты: "${q}".
+Верни ТОЛЬКО валидный JSON без markdown:
+{"manufacturer":"марка (Parliament, Marlboro, Winston, Camel)","name":"полное название: марка + вариант (Parliament Aqua Blue)","flavor":"1-2 предложения: табак, ментол/капсула, ароматика, крепость","volume":"штук в пачке (20 шт)"}
+Если не знаешь — оставь поле пустой строкой.`,
+      },
     },
   },
   en: {
@@ -258,6 +270,7 @@ const L = {
     openPacks: "Open packs", leftOf: (n, size) => `${n} of ${size} left`,
     finishPack: "Finish this pack", finishAsk: n => `Log the remaining ${n} as smoked and close the pack?`,
     look: "Appearance", theme: "Theme", dark: "Dark", light: "Light", lang: "Language",
+    tabs: "Tabs", tabsHint: "Which tabs to show on the main screen",
     currency: "Currency", currencyHint: "Only the symbol changes — prices you entered aren't converted",
     remind: "Reminder", remindTitle: "Ask what's left every evening",
     remindNative: "You can reply right from the notification", remindWeb: "Works only in the phone app", test: "Test",
@@ -310,6 +323,16 @@ If you don't know, leave the field as an empty string.`,
         ai: q => `Tobacco sticks for IQOS / heated tobacco systems: "${q}".
 Return ONLY valid JSON without markdown:
 {"manufacturer":"stick line (Terea, Heets, Fiit, Sentia, Delia)","name":"full name: line + variant (Terea Amber)","flavor":"1-2 sentences in English: tobacco, menthol/capsule, fruit notes, strength","volume":"sticks per pack (20 pcs)"}
+If you don't know, leave the field as an empty string.`,
+      },
+      cigs: {
+        tabLabel: "Cigarettes", title: "CIGARETTES", addBtn: "+ Add cigarettes", newTitle: "New cigarettes",
+        emptyHint: "Add your first pack of cigarettes", deleteMsg: "Delete these cigarettes?", backLabel: "← All cigarettes",
+        searchPlaceholder: "E.g.: Parliament Aqua Blue", unit: "pcs", volumeLabel: "Per pack", volumePlaceholder: "20 pcs",
+        crit: { taste: "Flavor", feel: "Draw strength", smell: "Smell (no stink)", aftertaste: "Aftertaste", repeat: "Would buy again" },
+        ai: q => `Cigarettes: "${q}".
+Return ONLY valid JSON without markdown:
+{"manufacturer":"brand (Parliament, Marlboro, Winston, Camel)","name":"full name: brand + variant (Parliament Aqua Blue)","flavor":"1-2 sentences in English: tobacco, menthol/capsule, aroma, strength","volume":"cigarettes per pack (20 pcs)"}
 If you don't know, leave the field as an empty string.`,
       },
     },
@@ -419,17 +442,21 @@ const fmtTime = t => new Date(t).toLocaleTimeString("ru-RU",{hour:"2-digit",minu
 const TRK_DEFAULT = { packs:[], log:[], cur:null, cfg:{remind:null, time:"22:00"} };
 const NO_ITEMS = [];
 const TABS = [...Object.keys(TYPES), "tracker"];
-const tabIndex = t => TABS.indexOf(t);
+const tabLabel = (k, lang, t) => TYPES[k] ? typeCfg(k, lang).tabLabel : t("tab.tracker");
 
 /* ── settings ── */
-const APP_DEFAULT = { currency:"USD", lang:"ru", theme:"dark", ai:true, geminiKey:"" };
+// tabs — видимость вкладок; сигареты появились позже, у тех, кто ими не пользуется, — выключены
+const APP_DEFAULT = { currency:"USD", lang:"ru", theme:"dark", ai:true, geminiKey:"", tabs:{vape:true, sticks:true, cigs:false, tracker:true} };
 // только подпись: уже введённые цены не пересчитываются
 const CURRENCIES = { USD:{ru:"$", en:"$"}, EUR:{ru:"€", en:"€"}, RUB:{ru:"₽", en:"₽"}, RSD:{ru:"дин", en:"din"} };
 const THEMES = ["dark","light"];
 async function loadSettings(trkCfg) {
   const saved = await readJSON("app_cfg", {});
   // валюта раньше лежала в настройках счётчика
-  return { ...APP_DEFAULT, ...(trkCfg.currency?{currency:trkCfg.currency}:{}), ...saved };
+  // вкладки — только true/false; все выключены (правленый руками бэкап) — как по умолчанию
+  const tabs = Object.fromEntries(TABS.map(k=>[k, typeof saved.tabs?.[k]==="boolean" ? saved.tabs[k] : APP_DEFAULT.tabs[k]]));
+  return { ...APP_DEFAULT, ...(trkCfg.currency?{currency:trkCfg.currency}:{}), ...saved,
+    tabs: Object.values(tabs).some(Boolean) ? tabs : APP_DEFAULT.tabs };
 }
 const saveSettings = v => unread.has("app_cfg") ? Promise.resolve() : Preferences.set({ key: "app_cfg", value: JSON.stringify(v) });
 // ошибка записи — сразу окном (flash виден не на всех экранах). Фоновые записи (счётчик пишет
@@ -1306,10 +1333,27 @@ function SettingsPage({app, onApp, trkCfg, onTrkCfg, onTest, flash, onFlash, onB
       <div className="sec">{t("lang")}</div>
       {chips(Object.entries(LANGS), app.lang, lang=>onApp({lang}))}
 
+      <div className="sec">{t("tabs")}</div>
+      <div className="hint" style={{marginBottom:12}}>{t("tabsHint")}</div>
+      <div className="panel" style={{marginTop:0}}>
+        {TABS.map((k,i)=>{
+          // последнюю видимую не выключить — иначе главный экран пустой
+          const on = !!app.tabs[k], last = on && TABS.filter(x=>app.tabs[x]).length===1;
+          return (
+            <div key={k} style={{display:"flex",alignItems:"center",gap:12,marginTop:i?12:0}}>
+              <div style={{flex:1,fontWeight:600,fontSize:14}}>{tabLabel(k, app.lang, t)}</div>
+              <button className={"switch"+(on?" on":"")} disabled={last} style={last?{opacity:.45}:null}
+                onClick={()=>onApp({tabs:{...app.tabs, [k]:!on}})}/>
+            </div>
+          );
+        })}
+      </div>
+
       <div className="sec">{t("currency")}</div>
       {chips(Object.entries(CURRENCIES).map(([k,sym])=>[k,`${sym[app.lang]} · ${k}`]), app.currency, currency=>onApp({currency}))}
       <div className="hint">{t("currencyHint")}</div>
 
+      {app.tabs.tracker&&<>
       <div className="sec">{t("remind")}</div>
       <div className="panel" style={{marginTop:0}}>
         <div style={{display:"flex",alignItems:"center",gap:12}}>
@@ -1326,6 +1370,7 @@ function SettingsPage({app, onApp, trkCfg, onTrkCfg, onTest, flash, onFlash, onB
           </div>
         )}
       </div>
+      </>}
 
       <div className="sec">{t("ai")}</div>
       <div className="panel" style={{marginTop:0}}>
@@ -1658,6 +1703,10 @@ export default function App() {
   const t = useMemo(()=>makeT(lang),[lang]);
   const cur = (CURRENCIES[app.currency] || CURRENCIES[APP_DEFAULT.currency])[lang];
   const ai = useMemo(()=>({on:app.ai, key:app.geminiKey}),[app.ai,app.geminiKey]);
+  const tabs = useMemo(()=>TABS.filter(k=>app.tabs[k]),[app.tabs]);
+  const tabIndex = k => tabs.indexOf(k);
+  // со скрытой вкладки (стики из «Новой пачки» счётчика) — обратно в счётчик
+  const homeTab = tabs.includes(tab) || !tabs.includes("tracker") ? tabs[0] : "tracker";
   const ctx = useMemo(()=>({cur, lang, t, ai}),[cur,lang,t,ai]);
   useEffect(()=>{
     document.documentElement.dataset.theme = theme;
@@ -1676,11 +1725,14 @@ export default function App() {
   const remLeft = packLeft(remPack, trk.log);
   const remName = remPack ? (sticks.find(s=>s.id===remPack.stickId)?.name||t("sticksDefault")) : "";
   // серия +1 — одно обновление напоминаний, а не по одному на каждое нажатие
+  // счётчик скрыт — напоминания молчат: тап по ним открыл бы скрытую вкладку.
+  // Сам переключатель не трогаем — вернули вкладку, вернулись и напоминания
+  const trkOn = tabs.includes("tracker");
   useEffect(()=>{
     if (loading) return;
-    const tm = setTimeout(()=>syncReminder(trk.cfg, remPack, remLeft, remName, t), 500);
+    const tm = setTimeout(()=>syncReminder(trkOn ? trk.cfg : {...trk.cfg, remind:false}, remPack, remLeft, remName, t), 500);
     return ()=>clearTimeout(tm);
-  },[loading,trk.cfg,remPack,remLeft,remName,t]);
+  },[loading,trk.cfg,trkOn,remPack,remLeft,remName,t]);
 
   // статус в каталоге идёт за счётчиком: пачка снова открыта (удалили запись) — «В наличии»,
   // докурили последнюю открытую пачку этих стиков — «Закончилось». Пять путей, которыми пачка
@@ -1741,7 +1793,8 @@ export default function App() {
     remove(id,tab).catch(storeFail); setView({page:"list"}, ()=>setItems(p=>p.filter(x=>x.id!==id)));
   };
   const switchTab = t => {
-    const dir = tabIndex(t)>tabIndex(tab)?"r":tabIndex(t)<tabIndex(tab)?"l":"";
+    // со скрытой вкладки направления нет — без сдвига
+    const from = tabIndex(tab), dir = from<0||t===tab ? "" : tabIndex(t)>from?"r":"l";
     const go = ()=>{
       // без View Transitions — старая анимация въезда вкладки
       setSlide(!VT&&dir?"in-"+dir:"");
@@ -1752,12 +1805,23 @@ export default function App() {
     const nav = view.page!=="list" ? "back" : dir&&"tab-"+dir;
     if (nav) animate(nav, go); else go();
   };
+  // открытую вкладку скрыли в настройках (или она скрыта с прошлого запуска) — встаём на первую.
+  // Только если скрыли именно её: стики из «Новой пачки» открываются и при скрытой вкладке,
+  // и включение другой вкладки оттуда не выкидывает
+  const prevTabs = useRef(null);
+  useEffect(()=>{
+    if (loading) return;
+    const was = prevTabs.current; prevTabs.current = tabs;
+    if (tabs.includes(tab) || (was && !was.includes(tab))) return;
+    setTab(tabs[0]); setSearch(""); setFilterFav(false); setFilterStatus(""); setCmpMode(false); setCmpIds([]);
+  // oxlint-disable-next-line react-hooks/exhaustive-deps
+  },[loading,tabs]);
 
   backRef.current = () => {
     if (closeLightbox) closeLightbox();
     else if (sheet) setSheet(null);
     else if (view.page==="list"&&cmpMode) { setCmpMode(false); setCmpIds([]); }
-    else if (view.page==="list"&&tab!==TABS[0]) switchTab(TABS[0]);
+    else if (view.page==="list"&&tab!==tabs[0]) switchTab(homeTab);
     else if (view.page==="list") CapApp.exitApp();
     else if (view.page==="form") setView(view.id?{page:"detail",id:view.id}:{page:"list"});
     else setView({page:"list"});
@@ -1776,7 +1840,7 @@ export default function App() {
     if (!s||cmpMode||sheet) return;
     const t = e.changedTouches[0], dx = t.clientX-s.x, dy = t.clientY-s.y;
     if (Math.abs(dx)<70 || Math.abs(dx)<Math.abs(dy)*1.8 || Date.now()-s.at>700) return;
-    const next = TABS[tabIndex(tab)+(dx<0?1:-1)];
+    const i = tabIndex(tab), next = i<0 ? homeTab : tabs[i+(dx<0?1:-1)];
     if (next) switchTab(next);
   };
 
@@ -1923,8 +1987,8 @@ export default function App() {
             </div>
           </div>
           <div className="tabs">
-            {TABS.map(k=>(
-              <button key={k} className={"tab"+(tab===k?" on":"")} onClick={()=>switchTab(k)}>{TYPES[k]?typeCfg(k,lang).tabLabel:t("tab.tracker")}</button>
+            {tabs.map(k=>(
+              <button key={k} className={"tab"+(tab===k?" on":"")} onClick={()=>switchTab(k)}>{tabLabel(k, lang, t)}</button>
             ))}
           </div>
           <div key={tab} className={"swipe "+slide}>

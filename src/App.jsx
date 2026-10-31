@@ -1527,7 +1527,9 @@ function Detail({l, type, smoked, onUpdate, onEdit, onDelete, onBack, onStartCom
 
   const addPrice = () => {
     const v = parseFloat(price.replace(",",".")); if (!v) return;
-    onUpdate({...l, prices:[...(l.prices||[]),{date,price:v}]}); setPrice("");
+    // свежая покупка — значит, есть в наличии; задним числом для истории статус не трогаем
+    const fresh = (l.prices||[]).every(p=>p.date<=date);
+    onUpdate({...l, prices:[...(l.prices||[]),{date,price:v}], ...(fresh?{status:"have"}:{})}); setPrice("");
   };
   const delPrice = i => onUpdate({...l, prices:l.prices.filter((_,j)=>j!==i)});
   const setRating = (k,v) => onUpdate({...l, ratings:{...(l.ratings||{}),[k]:v}});
